@@ -13,6 +13,7 @@ class DDSActionProvider(ActionProvider):
         self.enable_gripper = args_cli.enable_dex1_dds
         self.enable_dex3 = args_cli.enable_dex3_dds
         self.enable_inspire = args_cli.enable_inspire_dds
+        self.enable_waist_follow = getattr(args_cli, 'waist_follow', False)
         self.env = env
         # Initialize DDS communication
         self.robot_dds = None
@@ -65,6 +66,11 @@ class DDSActionProvider(ActionProvider):
             self.arm_action_pose_indices = [self.arm_joint_mapping[name] for name in self.arm_joint_mapping.keys()]
             self._arm_target_indices = [self.joint_to_index[name] for name in self.arm_joint_mapping.keys()]
             self._arm_source_indices = [idx + 15 for idx in self.arm_joint_mapping.values()]  # source data from positions[15:]
+            # waist yaw follow mapping (positions[12] = kWaistYaw)
+            if self.enable_waist_follow:
+                self.waist_joint_mapping = {"waist_yaw_joint": 12}  # DDS positions index
+                self._waist_target_indices = [self.joint_to_index[name] for name in self.waist_joint_mapping.keys()]
+                self._waist_source_indices = list(self.waist_joint_mapping.values())
         elif self.enable_robot == "h1_2":
             self.arm_joint_mapping = {
                 "left_shoulder_pitch_joint": 0,
@@ -165,6 +171,9 @@ class DDSActionProvider(ActionProvider):
         device = self.env.device
         self._arm_target_idx_t = torch.tensor(self._arm_target_indices, dtype=torch.long, device=device)
         self._arm_source_idx_t = torch.tensor(self._arm_source_indices, dtype=torch.long, device=device)
+        if self.enable_waist_follow and hasattr(self, '_waist_target_indices'):
+            self._waist_target_idx_t = torch.tensor(self._waist_target_indices, dtype=torch.long, device=device)
+            self._waist_source_idx_t = torch.tensor(self._waist_source_indices, dtype=torch.long, device=device)
         if self.enable_gripper:
             self._gripper_target_idx_t = torch.tensor(self._gripper_target_indices, dtype=torch.long, device=device)
             self._gripper_source_idx_t = torch.tensor(self._gripper_source_indices, dtype=torch.long, device=device)
@@ -204,6 +213,10 @@ class DDSActionProvider(ActionProvider):
                         self._positions_buf[:29].copy_(torch.tensor(positions[:29], dtype=torch.float32, device=self.env.device))
                         arm_vals = self._positions_buf.index_select(0, self._arm_source_idx_t)
                         full_action.index_copy_(0, self._arm_target_idx_t, arm_vals)
+                        # waist yaw follow
+                        if self.enable_waist_follow and hasattr(self, '_waist_target_idx_t'):
+                            waist_vals = self._positions_buf.index_select(0, self._waist_source_idx_t)
+                            full_action.index_copy_(0, self._waist_target_idx_t, waist_vals)
             elif self.enable_robot == "h1_2" and self.robot_dds:
                 cmd_data = self.robot_dds.get_robot_command()
                 if cmd_data and 'motor_cmd' in cmd_data:

@@ -8,6 +8,9 @@ import os
 project_root = os.path.dirname(os.path.abspath(__file__))
 os.environ["PROJECT_ROOT"] = project_root
 
+# DDS Setup
+#os.environ["CYCLONEDDS_URI"] = r"file:///home/eunwoo/Projects/custom/cyclonedds.xml"
+
 import argparse
 import contextlib
 import time
@@ -53,6 +56,7 @@ parser.add_argument("--profile_interval", type=int, default=500, help="performan
 parser.add_argument("--model_path", type=str, default="assets/model/policy.onnx", help="model path")
 parser.add_argument("--reward_interval", type=int, default=10, help="step interval for reward calculation")
 parser.add_argument("--enable_wholebody_dds", action="store_true", default=False, help="enable wh dds")
+parser.add_argument("--waist-follow", action="store_true", default=False, help="enable waist yaw following from DDS lowcmd")
 
 parser.add_argument("--physics_dt", type=float, default=None, help="physics time step, e.g., 0.005")
 parser.add_argument("--render_interval", type=int, default=None, help="render interval steps (>=1)")
