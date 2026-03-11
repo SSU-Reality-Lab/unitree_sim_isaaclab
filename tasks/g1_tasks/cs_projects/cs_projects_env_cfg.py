@@ -22,7 +22,7 @@ from tasks.common_config import G1RobotPresets, CameraPresets, CameraBaseCfg
 from tasks.common_event.event_manager import SimpleEvent, SimpleEventManager
 
 from . import mdp
-from .cs_projects_scene_cfg import build_scene_assets
+from .cs_projects_scene_cfg import build_scene_assets, build_all_scenes_items
 
 
 # ---------------------------------------------------------------------------
@@ -62,8 +62,17 @@ class CSProjectsSceneCfg(InteractiveSceneCfg):
     left_wrist_camera = CameraPresets.left_dex3_wrist_camera()
     right_wrist_camera = CameraPresets.right_dex3_wrist_camera()
 
-    def inject_scene_assets(self, scene_json_path: str):
-        """Load a scene JSON and inject shelf/wall/item assets as attributes."""
+    def inject_scene_assets(self, scene_json_path: str, all_scene_json_paths=None):
+        """Load scene assets and inject them as attributes.
+
+        If ``all_scene_json_paths`` is provided (multi-scene / pre-spawn mode),
+        shelf and walls come from the active scene only, while items from ALL
+        scenes are pre-spawned (inactive ones parked underground at z=-10).
+
+        The per-scene placement map is stored in ``self._scene_placements``
+        so that SceneManager can reposition items on scene switch.
+        """
+        # Shelf + walls from the active scene only (shared across all scenes)
         assets = build_scene_assets(scene_json_path)
 
         if assets["shelf"] is not None:
@@ -72,8 +81,23 @@ class CSProjectsSceneCfg(InteractiveSceneCfg):
         for attr_name, asset_cfg in assets["walls"]:
             setattr(self, attr_name, asset_cfg)
 
-        for attr_name, asset_cfg in assets["items"]:
-            setattr(self, attr_name, asset_cfg)
+        if all_scene_json_paths and len(all_scene_json_paths) > 1:
+            # Pre-spawn mode: items from ALL scenes
+            active_idx = 0
+            if scene_json_path in all_scene_json_paths:
+                active_idx = all_scene_json_paths.index(scene_json_path)
+            items, scene_placements = build_all_scenes_items(
+                all_scene_json_paths, active_scene_index=active_idx,
+            )
+            for attr_name, asset_cfg in items:
+                setattr(self, attr_name, asset_cfg)
+            # Return placements — caller stores it outside the scene cfg
+            return scene_placements
+        else:
+            # Single scene (backward compatible)
+            for attr_name, asset_cfg in assets["items"]:
+                setattr(self, attr_name, asset_cfg)
+            return None
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +169,7 @@ class CSProjectsEnvCfg(ManagerBasedRLEnvCfg):
 
     # --- set by factory before instantiation ---
     scene_json_path: str = ""
+    all_scene_json_paths: tuple = ()
 
     def __post_init__(self):
         # General settings
@@ -169,8 +194,14 @@ class CSProjectsEnvCfg(ManagerBasedRLEnvCfg):
         ))
 
         # Inject dynamic scene assets from the JSON
+        # scene_placements is stored here (on env cfg) — NOT on the scene cfg,
+        # because InteractiveSceneCfg treats all attributes as asset configs.
+        self.scene_placements = None
         if self.scene_json_path:
-            self.scene.inject_scene_assets(self.scene_json_path)
+            all_paths = list(self.all_scene_json_paths) if self.all_scene_json_paths else None
+            self.scene_placements = self.scene.inject_scene_assets(
+                self.scene_json_path, all_paths
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +213,9 @@ def get_env_cfg_class(task_num: int, scene_index: int):
 
     This is called lazily by the callable registered in gym.register kwargs,
     so scene JSON parsing only happens when the specific task is requested.
+
+    All scene JSON paths for the task are included so that the env can
+    pre-spawn items from every scene at init time (pre-spawn approach).
     """
     from . import SCENE_REGISTRY
 
@@ -192,11 +226,16 @@ def get_env_cfg_class(task_num: int, scene_index: int):
             f"Available: {sorted(SCENE_REGISTRY.keys())}"
         )
 
-    # Return a subclass that bakes in the scene_json_path as a default.
-    # This way, when load_cfg_from_registry calls cls() it gets a properly
-    # configured instance.
+    # Collect ALL scene paths for this task (sorted by scene index)
+    all_task_keys = sorted(
+        [k for k in SCENE_REGISTRY if k[0] == task_num],
+        key=lambda k: k[1],
+    )
+    all_paths = tuple(SCENE_REGISTRY[k] for k in all_task_keys)
+
     @configclass
     class _BoundEnvCfg(CSProjectsEnvCfg):
         scene_json_path: str = scene_path
+        all_scene_json_paths: tuple = all_paths
 
     return _BoundEnvCfg

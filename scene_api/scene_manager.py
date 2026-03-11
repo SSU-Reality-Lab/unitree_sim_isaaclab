@@ -1,16 +1,16 @@
 """
 Scene Manager — Handles scene lifecycle operations for the CS-Projects task.
 
-This module is called by the sim_main.py main loop to:
-  1. Poll for pending API commands (reset / next)
-  2. Execute scene reset (restore object positions from JSON)
-  3. Execute scene load (remove old objects, spawn new ones from next JSON)
+Uses the **pre-spawn approach**: all items from all scenes are spawned at env
+init time.  Active scene items sit at their correct positions; inactive items
+are parked underground (z=-10).  Scene transitions reposition items via
+``write_root_pose_to_sim()`` — no USD prim creation or deletion at runtime,
+which would invalidate physics tensor views.
 
-It bridges the SceneCommandQueue (from scene_server.py) with the Isaac Sim
-environment and the CS-Projects scene config system.
+Called by sim_main.py's main loop:
+    scene_mgr.poll()   # once per tick
 """
 
-import os
 import logging
 import torch
 from typing import Optional
@@ -19,14 +19,18 @@ from .scene_server import SceneServer, CommandType
 
 logger = logging.getLogger("scene_manager")
 
+# Underground parking position (x, y, z, qw, qx, qy, qz)
+_PARK_POSE = [0.0, 0.0, -10.0, 1.0, 0.0, 0.0, 0.0]
+
 
 class SceneManager:
     """Manages scene transitions driven by the Scene API server.
 
-    Usage in sim_main.py:
+    Usage in sim_main.py::
+
         scene_mgr = SceneManager(env, env_cfg, scene_server, scene_json_list)
         # In main loop:
-        scene_mgr.poll(env)
+        scene_mgr.poll()
     """
 
     def __init__(
@@ -45,6 +49,26 @@ class SceneManager:
         self.current_index = start_index
         self.task_num = task_num
 
+        # Pre-spawn placement data from env cfg (NOT scene cfg, to avoid
+        # Isaac Lab treating it as an asset config)
+        # {scene_idx: [(attr_name, pos_tuple, rot_tuple), ...]}
+        self.scene_placements: Optional[dict] = getattr(
+            env_cfg, 'scene_placements', None
+        )
+
+        # Build list of ALL scene item attr_names for bulk parking
+        self.all_scene_item_names: list[str] = []
+        if self.scene_placements:
+            for scene_idx in sorted(self.scene_placements.keys()):
+                for attr_name, _pos, _rot in self.scene_placements[scene_idx]:
+                    self.all_scene_item_names.append(attr_name)
+            logger.info(
+                f"[SceneManager] Pre-spawn mode: {len(self.all_scene_item_names)} items "
+                f"across {len(self.scene_placements)} scenes"
+            )
+        else:
+            logger.warning("[SceneManager] No pre-spawn data — scene transitions disabled")
+
         # Update server state
         q = self.server.cmd_queue
         q.task_num = task_num
@@ -52,6 +76,10 @@ class SceneManager:
         q.current_scene_index = start_index
         q.scene_json_path = scene_json_list[start_index] if scene_json_list else ""
         q.all_completed = len(scene_json_list) == 0
+
+    # ------------------------------------------------------------------
+    # Main loop hook
+    # ------------------------------------------------------------------
 
     def poll(self):
         """Check for pending commands and execute them. Call once per main loop tick."""
@@ -62,7 +90,9 @@ class SceneManager:
         try:
             if cmd.cmd == CommandType.RESET_CURRENT:
                 self._reset_current_scene()
-                self.server.cmd_queue.complete(cmd, success=True, message="Scene reset to default positions")
+                self.server.cmd_queue.complete(
+                    cmd, success=True, message="Scene reset to default positions"
+                )
                 logger.info(f"[SceneManager] Reset scene {self.current_index}")
 
             elif cmd.cmd == CommandType.LOAD_NEXT:
@@ -72,101 +102,126 @@ class SceneManager:
                     self.server.cmd_queue.all_completed = True
                     self.server.cmd_queue.complete(
                         cmd, success=True,
-                        message="All tasks completed — no more scenes to load"
+                        message="All tasks completed — no more scenes to load",
                     )
                     logger.info("[SceneManager] All scenes completed")
                 else:
                     self._load_scene(next_idx)
                     self.server.cmd_queue.complete(
                         cmd, success=True,
-                        message=f"Loaded scene {next_idx}/{len(self.scene_json_list) - 1}"
+                        message=f"Loaded scene {next_idx}/{len(self.scene_json_list) - 1}",
                     )
                     logger.info(f"[SceneManager] Loaded scene {next_idx}")
 
         except Exception as e:
-            logger.error(f"[SceneManager] Command failed: {e}")
+            logger.error(f"[SceneManager] Command failed: {e}", exc_info=True)
             self.server.cmd_queue.complete(cmd, success=False, message=str(e))
 
+    # ------------------------------------------------------------------
+    # Scene operations (pre-spawn approach)
+    # ------------------------------------------------------------------
+
     def _reset_current_scene(self):
-        """Reset all dynamic objects in the current scene to their default positions."""
+        """Reset all objects in the current scene to their correct positions.
+
+        Also resets the robot via ``reset_scene_to_default``, then re-applies
+        item positions (since default_root_state reflects init-time positions,
+        not the current scene after a switch).
+        """
         import isaaclab.envs.mdp as base_mdp
 
-        # Use the event manager's reset_all_self event if registered
-        if hasattr(self.env_cfg, 'event_manager'):
-            self.env_cfg.event_manager.trigger("reset_all_self", self.env)
-        else:
-            # Fallback: direct reset
-            base_mdp.reset_scene_to_default(
-                self.env,
-                torch.arange(self.env.num_envs, device=self.env.device),
-            )
+        # Reset robot + all rigid bodies to init-time defaults
+        base_mdp.reset_scene_to_default(
+            self.env,
+            torch.arange(self.env.num_envs, device=self.env.device),
+        )
+
+        if self.scene_placements:
+            # After reset_to_default, items are at init-time positions.
+            # Park everything, then place current scene items correctly.
+            self._park_all_items()
+            self._apply_scene_positions(self.current_index)
 
     def _load_scene(self, scene_index: int):
-        """Load a new scene by index: remove old dynamic prims and spawn new ones.
+        """Switch to a new scene by repositioning pre-spawned items.
 
-        This performs a "hot swap" of scene objects:
-          1. Delete existing item prims from the USD stage
-          2. Rebuild scene assets from the new JSON
-          3. Inject new assets into the scene
-          4. Reset the simulation
+        1. Park ALL scene items underground
+        2. Place new scene's items at their correct positions
+        3. Update server state
         """
-        import omni.usd
-        from pxr import Usd, UsdGeom
+        if not self.scene_placements:
+            logger.error("[SceneManager] Cannot switch scene — no pre-spawn data")
+            return
+
         import isaaclab.envs.mdp as base_mdp
 
-        scene_json_path = self.scene_json_list[scene_index]
-        stage = omni.usd.get_context().get_stage()
+        # Reset robot to default pose
+        base_mdp.reset_scene_to_default(
+            self.env,
+            torch.arange(self.env.num_envs, device=self.env.device),
+        )
 
-        # --- Step 1: Remove existing dynamic item prims ---
-        # Items are spawned under /World/envs/env_0/<safe_name>
-        # We identify them by checking which prims are RigidBody enabled
-        # and NOT the robot or shelf.
-        env_prim_path = "/World/envs/env_0"
-        env_prim = stage.GetPrimAtPath(env_prim_path)
+        # Park all items underground
+        self._park_all_items()
 
-        keep_prefixes = {"Robot", "Shelf", "Wall_", "Walls", "light",
-                         "front_camera", "left_wrist_camera", "right_wrist_camera",
-                         "PerspectiveCamera", "GroundPlane"}
+        # Place new scene items at correct positions
+        self._apply_scene_positions(scene_index)
 
-        if env_prim.IsValid():
-            children_to_remove = []
-            for child in env_prim.GetChildren():
-                name = child.GetName()
-                if not any(name.startswith(pfx) for pfx in keep_prefixes):
-                    children_to_remove.append(child.GetPath().pathString)
-
-            for prim_path in children_to_remove:
-                stage.RemovePrim(prim_path)
-                logger.info(f"  Removed prim: {prim_path}")
-
-        # --- Step 2: Rebuild scene assets from new JSON ---
-        from tasks.g1_tasks.cs_projects.cs_projects_scene_cfg import build_scene_assets
-        new_assets = build_scene_assets(scene_json_path)
-
-        # --- Step 3: Spawn new item prims ---
-        # We need to use the spawner to create new prims on the stage
-        for attr_name, asset_cfg in new_assets["items"]:
-            try:
-                # Resolve the prim path for env_0
-                prim_path = asset_cfg.prim_path.replace("env_.*", "env_0")
-                spawn_cfg = asset_cfg.spawn
-                # Spawn the prim
-                spawn_cfg.func(
-                    prim_path,
-                    spawn_cfg,
-                    translation=asset_cfg.init_state.pos,
-                    orientation=asset_cfg.init_state.rot,
-                )
-                logger.info(f"  Spawned: {prim_path}")
-            except Exception as e:
-                logger.error(f"  Failed to spawn {attr_name}: {e}")
-
-        # --- Step 4: Reset simulation to settle new objects ---
-        self.env.sim.reset()
-        self.env.reset()
-
-        # --- Step 5: Update state ---
+        # Update state
         self.current_index = scene_index
         q = self.server.cmd_queue
         q.current_scene_index = scene_index
-        q.scene_json_path = scene_json_path
+        q.scene_json_path = self.scene_json_list[scene_index]
+
+        logger.info(
+            f"[SceneManager] Scene {scene_index}: "
+            f"{len(self.scene_placements.get(scene_index, []))} items placed"
+        )
+
+    # ------------------------------------------------------------------
+    # Item repositioning helpers
+    # ------------------------------------------------------------------
+
+    def _park_all_items(self):
+        """Move ALL pre-spawned scene items underground and zero their velocity."""
+        device = self.env.device
+        park_pose = torch.tensor([_PARK_POSE], dtype=torch.float32, device=device)
+        zero_vel = torch.zeros((1, 6), dtype=torch.float32, device=device)
+        env_ids = torch.tensor([0], dtype=torch.long, device=device)
+
+        for name in self.all_scene_item_names:
+            try:
+                obj = self.env.scene[name]
+                obj.write_root_pose_to_sim(park_pose, env_ids)
+                obj.write_root_velocity_to_sim(zero_vel, env_ids)
+            except KeyError:
+                logger.warning(f"[SceneManager] Item '{name}' not found in scene")
+            except Exception as e:
+                logger.warning(f"[SceneManager] Failed to park '{name}': {e}")
+
+    def _apply_scene_positions(self, scene_index: int):
+        """Reposition items for the given scene to their correct positions."""
+        placements = self.scene_placements.get(scene_index, [])
+        if not placements:
+            logger.warning(f"[SceneManager] No placements for scene {scene_index}")
+            return
+
+        device = self.env.device
+        zero_vel = torch.zeros((1, 6), dtype=torch.float32, device=device)
+        env_ids = torch.tensor([0], dtype=torch.long, device=device)
+
+        for attr_name, pos, rot in placements:
+            try:
+                obj = self.env.scene[attr_name]
+                # pose: (N, 7) = [x, y, z, qw, qx, qy, qz]
+                pose = torch.tensor(
+                    [[pos[0], pos[1], pos[2], rot[0], rot[1], rot[2], rot[3]]],
+                    dtype=torch.float32,
+                    device=device,
+                )
+                obj.write_root_pose_to_sim(pose, env_ids)
+                obj.write_root_velocity_to_sim(zero_vel, env_ids)
+            except KeyError:
+                logger.warning(f"[SceneManager] Item '{attr_name}' not found in scene")
+            except Exception as e:
+                logger.warning(f"[SceneManager] Failed to reposition '{attr_name}': {e}")

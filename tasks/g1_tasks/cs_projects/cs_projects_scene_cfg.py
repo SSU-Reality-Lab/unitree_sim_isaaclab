@@ -540,6 +540,106 @@ def _measure_usd_aabb(usd_path: str) -> dict:
         return {}
 
 
+def build_all_scenes_items(scene_json_paths: list, active_scene_index: int = 0):
+    """Build RigidObjectCfg for ALL items across ALL scenes (pre-spawn approach).
+
+    Active scene items are placed at their JSON positions.
+    Inactive scene items are parked underground at z=-10.
+
+    Item names are scene-prefixed: ``s{scene_idx}_{label}_{item_idx}``
+    to guarantee uniqueness across scenes.
+
+    Args:
+        scene_json_paths: list of scene JSON paths (one per scene in the task).
+        active_scene_index: index of the initially active scene.
+
+    Returns:
+        items: list of ``(attr_name, RigidObjectCfg)``
+        scene_placements: ``{scene_idx: [(attr_name, pos_tuple, rot_tuple), ...]}``
+            — the *correct* positions for each scene's items, used by SceneManager
+            for repositioning on scene switch.
+    """
+    import isaaclab.sim as sim_utils
+    from isaaclab.assets import RigidObjectCfg
+    from .rigid_usd_spawner import RigidUsdFileCfg
+
+    PARK_POS = (0.0, 0.0, -10.0)
+    PARK_ROT = (1.0, 0.0, 0.0, 0.0)
+
+    items = []
+    scene_placements = {}
+
+    for scene_idx, scene_json_path in enumerate(scene_json_paths):
+        cfg = load_scene_config(scene_json_path)
+        item_usds = cfg.get("item_usds", {})
+        zone_config = cfg.get("zone_config", {})
+        planes_dir = cfg["planes_dir"]
+
+        # Measure AABBs from USD files
+        for label, info in item_usds.items():
+            if not isinstance(info, dict):
+                continue
+            usd_path = info.get("usd", "")
+            if usd_path and os.path.exists(usd_path):
+                aabb = _measure_usd_aabb(usd_path)
+                if aabb:
+                    info.setdefault("bottom_offset", aabb["bottom_offset"])
+                    info.setdefault("aabb_cz", aabb["aabb_cz"])
+
+        planes = _load_planes(planes_dir)
+        placements = _compute_placements(planes, zone_config, item_usds)
+
+        is_active = (scene_idx == active_scene_index)
+        scene_placement_list = []
+
+        for p in placements:
+            label = p["label"]
+            idx = p["index"]
+            usd_path = p["usd"]
+            pos = tuple(p["pos"])
+            qw, qx, qy, qz = p["quat_wxyz"]
+            rot = (qw, qx, qy, qz)
+
+            safe_name = _sanitize_prim_name(f"s{scene_idx}_{label}_{idx}")
+
+            if not os.path.exists(usd_path):
+                continue
+
+            item_info = item_usds.get(label, {})
+            if not isinstance(item_info, dict):
+                item_info = {}
+            mass = _estimate_mass(item_info)
+
+            # Active scene: correct position; inactive: parked underground
+            init_pos = pos if is_active else PARK_POS
+            init_rot = rot if is_active else PARK_ROT
+
+            asset = RigidObjectCfg(
+                prim_path=f"/World/envs/env_.*/{safe_name}",
+                init_state=RigidObjectCfg.InitialStateCfg(
+                    pos=init_pos,
+                    rot=init_rot,
+                ),
+                spawn=RigidUsdFileCfg(
+                    usd_path=usd_path,
+                    rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                        disable_gravity=False,
+                        max_depenetration_velocity=1.0,
+                    ),
+                    mass_props=sim_utils.MassPropertiesCfg(mass=mass),
+                    collision_props=sim_utils.CollisionPropertiesCfg(
+                        collision_enabled=True,
+                    ),
+                ),
+            )
+            items.append((safe_name, asset))
+            scene_placement_list.append((safe_name, pos, rot))
+
+        scene_placements[scene_idx] = scene_placement_list
+
+    return items, scene_placements
+
+
 def build_scene_assets(scene_json_path: str):
     """
     Parse a scene JSON and return lists of asset definitions suitable for
