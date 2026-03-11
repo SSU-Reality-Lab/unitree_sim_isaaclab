@@ -54,7 +54,7 @@ class CSProjectsSceneCfg(InteractiveSceneCfg):
 
     # Robot — positioned to align with the convenience store shelf scene
     robot: ArticulationCfg = G1RobotPresets.g1_29dof_dex3_base_fix_waist(
-        init_pos=(-0.15, -0.403, 0.76),
+        init_pos=(0.15, -0.45, 0.79),
     )
 
     # Cameras
@@ -69,8 +69,8 @@ class CSProjectsSceneCfg(InteractiveSceneCfg):
         if assets["shelf"] is not None:
             setattr(self, "shelf", assets["shelf"])
 
-        if assets["walls"] is not None:
-            setattr(self, "walls", assets["walls"])
+        for attr_name, asset_cfg in assets["walls"]:
+            setattr(self, attr_name, asset_cfg)
 
         for attr_name, asset_cfg in assets["items"]:
             setattr(self, attr_name, asset_cfg)

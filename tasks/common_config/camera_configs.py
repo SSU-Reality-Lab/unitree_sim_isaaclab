@@ -76,21 +76,50 @@ class CameraBaseCfg:
 
 
 
+# ---- D435i RGB camera parameters ----
+# Intel RealSense D435i RGB sensor specs:
+#   - Native: 1920x1080, HFOV=69.4°, VFOV=42.5°
+#   - Sensor: OV2740, 3μm pixel pitch, 5.76mm × 3.24mm
+#   - Color frame offset from camera_link (depth origin): Y +15mm
+#     (source: realsense-ros _d435.urdf.xacro)
+#
+# Isaac Sim FOV formula: HFOV = 2 * atan(horizontal_aperture / (2 * focal_length))
+#   focal_length = 14.43, horizontal_aperture = 20.0 → HFOV = 69.4°
+#   At 640×480 (4:3): VFOV ≈ 55.0° (differs from native 42.5° due to aspect ratio)
+_D435I_FOCAL_LENGTH = 14.43
+_D435I_HORIZONTAL_APERTURE = 20.0
+_D435I_COLOR_OFFSET_Y = 0.015  # 15mm from depth sensor origin
+
+
 @configclass
 class CameraPresets:
     """camera preset configuration collection
-    
+
     include the common camera configuration preset for different scenes
     """
-    
+
     @classmethod
     def g1_front_camera(cls) -> CameraCfg:
-        """front camera configuration"""
-        return CameraBaseCfg.get_camera_config()
+        """G1 front camera (D435i RGB)"""
+        return CameraBaseCfg.get_camera_config(
+            height=720,
+            width=1280,
+            focal_length=_D435I_FOCAL_LENGTH,
+            horizontal_aperture=_D435I_HORIZONTAL_APERTURE,
+            pos_offset=(0, _D435I_COLOR_OFFSET_Y, 0),
+        )
+
     @classmethod
     def h12_front_camera(cls) -> CameraCfg:
-        """front camera configuration"""
-        return CameraBaseCfg.get_camera_config(prim_path = "/World/envs/env_.*/Robot/camera_link/front_cam")
+        """H1-2 front camera (D435i RGB)"""
+        return CameraBaseCfg.get_camera_config(
+            prim_path="/World/envs/env_.*/Robot/camera_link/front_cam",
+            height=720,
+            width=1280,
+            focal_length=_D435I_FOCAL_LENGTH,
+            horizontal_aperture=_D435I_HORIZONTAL_APERTURE,
+            pos_offset=(0, _D435I_COLOR_OFFSET_Y, 0),
+        )
     @classmethod
     def g1_world_camera(cls) -> CameraCfg:
         """front camera configuration"""
@@ -109,98 +138,98 @@ class CameraPresets:
                                                     horizontal_aperture=27)
     @classmethod
     def left_gripper_wrist_camera(cls) -> CameraCfg:
-        """left wrist camera configuration"""
+        """left wrist camera configuration (D435 RGB)"""
         return CameraBaseCfg.get_camera_config(
             prim_path="/World/envs/env_.*/Robot/left_hand_base_link/left_wrist_camera",
-            height=480,
-            width=640,
+            height=720,
+            width=1280,
             update_period=0.02,
             data_types=["rgb"],
-            focal_length=12,
+            focal_length=_D435I_FOCAL_LENGTH,
             focus_distance=400.0,
-            horizontal_aperture=20.0,
+            horizontal_aperture=_D435I_HORIZONTAL_APERTURE,
             clipping_range=(0.1, 1.0e5),
             pos_offset=(0.02541028, 0.045, 0.135),
             rot_offset=(-0.34202, 0.93969, 0, 0),
         )
     @classmethod
     def right_gripper_wrist_camera(cls) -> CameraCfg:
-        """right wrist camera configuration"""
+        """right wrist camera configuration (D435 RGB)"""
         return CameraBaseCfg.get_camera_config(
             prim_path="/World/envs/env_.*/Robot/right_hand_base_link/right_wrist_camera",
-            height=480,
-            width=640,
+            height=720,
+            width=1280,
             update_period=0.02,
             data_types=["rgb"],
-            focal_length=12,
+            focal_length=_D435I_FOCAL_LENGTH,
             focus_distance=400.0,
-            horizontal_aperture=20.0,
+            horizontal_aperture=_D435I_HORIZONTAL_APERTURE,
             clipping_range=(0.1, 1.0e5),
             pos_offset=(-0.02541028, 0.045, 0.135),
             rot_offset=(-0.34202, 0.93969, 0, 0),
-        ) 
+        )
     @classmethod
     def left_dex3_wrist_camera(cls) -> CameraCfg:
-        """left wrist camera configuration"""
+        """left wrist camera configuration (D435 RGB)"""
         return CameraBaseCfg.get_camera_config(
             prim_path="/World/envs/env_.*/Robot/left_hand_camera_base_link/left_wrist_camera",
-            height=480,
-            width=640,
+            height=720,
+            width=1280,
             update_period=0.02,
             data_types=["rgb"],
-            focal_length=12.0,
+            focal_length=_D435I_FOCAL_LENGTH,
             focus_distance=400.0,
-            horizontal_aperture=20.0,
+            horizontal_aperture=_D435I_HORIZONTAL_APERTURE,
             clipping_range=(0.1, 1.0e5),
-            pos_offset=(-0.04012, -0.07441 ,0.15711),
-            rot_offset=(0.00539,0.86024,0.0424, 0.50809),
+            pos_offset=(-0.04012, -0.07441, 0.15711),
+            rot_offset=(0.00539, 0.86024, 0.0424, 0.50809),
         )
     @classmethod
     def right_dex3_wrist_camera(cls) -> CameraCfg:
-        """right wrist camera configuration"""
+        """right wrist camera configuration (D435 RGB)"""
         return CameraBaseCfg.get_camera_config(
             prim_path="/World/envs/env_.*/Robot/right_hand_camera_base_link/right_wrist_camera",
-            height=480,
-            width=640,
+            height=720,
+            width=1280,
             update_period=0.02,
             data_types=["rgb"],
-            focal_length=12.0,
+            focal_length=_D435I_FOCAL_LENGTH,
             focus_distance=400.0,
-            horizontal_aperture=20.0,
+            horizontal_aperture=_D435I_HORIZONTAL_APERTURE,
             clipping_range=(0.1, 1.0e5),
-            pos_offset=(-0.04012, 0.07441 ,0.15711),
-            rot_offset=(0.00539,0.86024,0.0424, 0.50809),
-        ) 
-    
+            pos_offset=(-0.04012, 0.07441, 0.15711),
+            rot_offset=(0.00539, 0.86024, 0.0424, 0.50809),
+        )
+
     @classmethod
     def left_inspire_wrist_camera(cls) -> CameraCfg:
-        """left wrist camera configuration"""
+        """left wrist camera configuration (D435 RGB)"""
         return CameraBaseCfg.get_camera_config(
             prim_path="/World/envs/env_.*/Robot/left_hand_camera_base_link/left_wrist_camera",
-            height=480,
-            width=640,
+            height=720,
+            width=1280,
             update_period=0.02,
             data_types=["rgb"],
-            focal_length=12.0,
+            focal_length=_D435I_FOCAL_LENGTH,
             focus_distance=400.0,
-            horizontal_aperture=20.0,
+            horizontal_aperture=_D435I_HORIZONTAL_APERTURE,
             clipping_range=(0.1, 1.0e5),
-            pos_offset=(-0.04012, -0.07441 ,0.15711),
-            rot_offset=(0.00539,0.86024,0.0424, 0.50809),
+            pos_offset=(-0.04012, -0.07441, 0.15711),
+            rot_offset=(0.00539, 0.86024, 0.0424, 0.50809),
         )
     @classmethod
     def right_inspire_wrist_camera(cls) -> CameraCfg:
-        """right wrist camera configuration"""
+        """right wrist camera configuration (D435 RGB)"""
         return CameraBaseCfg.get_camera_config(
             prim_path="/World/envs/env_.*/Robot/right_hand_camera_base_link/right_wrist_camera",
-            height=480,
-            width=640,
+            height=720,
+            width=1280,
             update_period=0.02,
             data_types=["rgb"],
-            focal_length=12.0,
+            focal_length=_D435I_FOCAL_LENGTH,
             focus_distance=400.0,
-            horizontal_aperture=20.0,
+            horizontal_aperture=_D435I_HORIZONTAL_APERTURE,
             clipping_range=(0.1, 1.0e5),
-            pos_offset=(-0.04012, 0.07441 ,0.15711),
-            rot_offset=(0.00539,0.86024,0.0424, 0.50809),
+            pos_offset=(-0.04012, 0.07441, 0.15711),
+            rot_offset=(0.00539, 0.86024, 0.0424, 0.50809),
         ) 

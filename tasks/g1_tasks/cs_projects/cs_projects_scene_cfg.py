@@ -1,7 +1,7 @@
 """
-Scene configuration for CS-Projects generated scenes (v2 — physics-enabled).
+Scene configuration for CS-Projects generated scenes (v4 — physics-enabled).
 
-Reads a scene JSON (from the generated_scenes2 pipeline), resolves asset paths
+Reads a scene JSON (from the generated_scenes4 pipeline), resolves asset paths
 relative to the CS_PROJECTS environment variable, computes shelf-item placements,
 and builds an InteractiveSceneCfg with:
   - AssetBaseCfg (kinematic) for shelf and walls
@@ -47,15 +47,15 @@ def _resolve(path: str, base_dir: str) -> str:
 # ---------------------------------------------------------------------------
 
 _DEFAULTS = {
-    "shelf_usd": "Prop/shelf_7by1/ssulab/usd/ssulab.usd",
-    "shelf_name": "shelf_7by1",
-    "planes_dir": "Prop/shelf_7by1/planes_fixed",
+    "shelf_usd": "Prop/shelf/shelf_real.usd",
+    "shelf_name": "SHELF",
+    "planes_dir": "Prop/shelf/planes_fixed_real",
     "walls_enabled": True,
-    "wall_usd": "Prop/walls/walls.usda",
-    "wall_height": 1.7,
+    "wall_usd": "",
+    "wall_height": 1.8,
     "wall_thickness": 0.05,
     "wall_margin": 0.05,
-    "wall_length": 2.0,
+    "wall_length": 2.2,
     "fast_load": True,
     "placement_mode": "auto",
 }
@@ -224,14 +224,19 @@ def _compute_placements(planes, zone_config, item_usds):
             n_rows = max(1, int((total_u_m + gap_fb) / (depth + gap_fb)))
             n_cols = math.ceil(count / n_rows)
             zone_width = n_cols * (foot + gap_lr) - gap_lr
-            bottom_offset = H / 2.0
+            # Bottom-origin assumption: USD item origin is at the base of the
+            # geometry, so bottom_offset = 0 for upright items.  The AABB center
+            # Z (aabb_cz) is H/2 above the origin.
+            bottom_offset = 0.0
+            aabb_cz = H / 2.0
 
             zone_infos.append({
                 "label": label, "count": count, "foot": foot, "depth": depth,
                 "gap_lr": gap_lr, "gap_fb": gap_fb,
                 "n_cols": n_cols, "n_rows": n_rows,
                 "zone_width": zone_width, "obj_H": H,
-                "bottom_offset": bottom_offset, "_zone_cfg": z,
+                "bottom_offset": bottom_offset, "aabb_cz": aabb_cz,
+                "_zone_cfg": z,
             })
 
         if not zone_infos:
@@ -276,6 +281,7 @@ def _compute_placements(planes, zone_config, item_usds):
             count = zi["count"]
             obj_H = zi["obj_H"]
             bottom_offset = zi["bottom_offset"]
+            aabb_cz = zi["aabb_cz"]
             zone_width = zi["zone_width"]
 
             block_u = n_rows * depth + (n_rows - 1) * gap_fb
@@ -296,7 +302,7 @@ def _compute_placements(planes, zone_config, item_usds):
             per_item_rots = z_cfg.get("item_rotations", {})
             per_item_offsets = z_cfg.get("item_offsets", {})
 
-            def _compute_ori_offset(crx, cry, crz, _foot=foot, _depth=depth, _obj_H=obj_H, _bottom_offset=bottom_offset):
+            def _compute_ori_offset(crx, cry, crz, _foot=foot, _depth=depth, _obj_H=obj_H, _bottom_offset=bottom_offset, _aabb_cz=aabb_cz):
                 if crx != 0.0 or cry != 0.0 or crz != 0.0:
                     q = _euler_deg_to_quat_xyzw(crx, cry, crz)
                     rx_r = math.radians(crx)
@@ -309,7 +315,9 @@ def _compute_placements(planes, zone_config, item_usds):
                     hx = _foot / 2
                     hy = _depth / 2
                     hz = _obj_H / 2
-                    boff = abs(R20) * hx + abs(R21) * hy + abs(R22) * hz
+                    # Rotated AABB min Z accounts for AABB center offset (aabb_cz)
+                    # boff = half_extent_z_rotated - R22 * aabb_cz
+                    boff = abs(R20) * hx + abs(R21) * hy + abs(R22) * hz - R22 * _aabb_cz
                     return q, boff
                 return [0.0, 0.0, 0.0, 1.0], _bottom_offset
 
@@ -439,6 +447,71 @@ def _estimate_mass(item_info: dict) -> float:
     return round(mass, 4)
 
 
+def _estimate_shelf_aabb(planes):
+    """Estimate the shelf's world-space AABB from loaded plane data.
+
+    Computes the bounding box from plane centroids and their usable mask extents.
+    Returns ((x_min, y_min, z_min), (x_max, y_max, z_max)).
+    """
+    x_vals, y_vals, z_vals = [], [], []
+    for p in planes:
+        ctr = p["centroid"]
+        cell = p["cell"]
+        u0, v0 = p["origin_uv"]
+        u_w = p["u"]
+        v_w = p["v"]
+
+        u_min_m = u0 + p["u_min_idx"] * cell
+        u_max_m = u0 + p["u_max_idx"] * cell
+        v_min_m = v0 + p["v_min_idx"] * cell
+        v_max_m = v0 + p["v_max_idx"] * cell
+
+        for u_m in [u_min_m, u_max_m]:
+            for v_m in [v_min_m, v_max_m]:
+                x_vals.append(ctr[0] + u_m * u_w[0] + v_m * v_w[0])
+                y_vals.append(ctr[1] + u_m * u_w[1] + v_m * v_w[1])
+                z_vals.append(ctr[2] + u_m * u_w[2] + v_m * v_w[2])
+
+    if not x_vals:
+        return (0, 0, 0), (0, 0, 0)
+    return (min(x_vals), min(y_vals), min(z_vals)), (max(x_vals), max(y_vals), max(z_vals))
+
+
+def _compute_wall_geometry(planes, cfg):
+    """Compute ㄷ-shaped wall cuboid positions and sizes.
+
+    Mirrors ``_create_walls`` in generated_scenes4/shelf_cola/main.py.
+    Front (-Y) is open.
+
+    Returns dict of {name: {"pos": (x,y,z), "size": (sx,sy,sz)}} for back/left/right.
+    """
+    (sx_min, sy_min, _sz_min), (sx_max, sy_max, _sz_max) = _estimate_shelf_aabb(planes)
+
+    wh = cfg.get("wall_height", 1.8)
+    wt = cfg.get("wall_thickness", 0.05)
+    mg = cfg.get("wall_margin", 0.05)
+    wl = cfg.get("wall_length", 2.2)
+
+    cx = (sx_min + sx_max) / 2.0
+
+    # Back wall: behind shelf (+Y), with 0.25m additional offset (matches generated_scenes4)
+    back_y = sy_max + mg + wt / 2.0 + 0.25
+
+    # Side walls: extend from back wall inner face toward front (-Y)
+    side_y_start = back_y - wt / 2.0
+    side_y_end = side_y_start - wl
+    side_cy = (side_y_start + side_y_end) / 2.0
+
+    left_x = cx - wl / 2.0 - wt / 2.0
+    right_x = cx + wl / 2.0 + wt / 2.0
+
+    return {
+        "back":  {"pos": (cx, back_y, wh / 2.0), "size": (wl + 2 * wt, wt, wh)},
+        "left":  {"pos": (left_x, side_cy, wh / 2.0), "size": (wt, wl, wh)},
+        "right": {"pos": (right_x, side_cy, wh / 2.0), "size": (wt, wl, wh)},
+    }
+
+
 def build_scene_assets(scene_json_path: str):
     """
     Parse a scene JSON and return lists of asset definitions suitable for
@@ -456,8 +529,6 @@ def build_scene_assets(scene_json_path: str):
     # Deferred imports — only needed when actually building scene assets
     import isaaclab.sim as sim_utils
     from isaaclab.assets import AssetBaseCfg, RigidObjectCfg
-    from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
-
     cfg = load_scene_config(scene_json_path)
 
     item_usds = cfg.get("item_usds", {})
@@ -474,16 +545,21 @@ def build_scene_assets(scene_json_path: str):
     # Shelf quaternion: OG [x,y,z,w] -> USD [w,x,y,z]
     shelf_quat_wxyz = _quat_xyzw_to_wxyz(_SHELF_QUAT_OG)
 
-    result = {"shelf": None, "walls": None, "items": []}
+    result = {"shelf": None, "walls": [], "items": []}
 
-    # Shelf — kinematic (static, collision via convex hull)
+    # Shelf — kinematic (static) with SDF mesh collision.
+    # The shelf USD is purely visual (no physics APIs baked in).
+    # KinematicUsdFileCfg applies RigidBodyAPI(kinematic) + PhysxSDFMeshCollisionAPI
+    # to all visual meshes so items don't fall through the shelf surfaces.
+    from .rigid_usd_spawner import KinematicUsdFileCfg
+
     result["shelf"] = AssetBaseCfg(
         prim_path="/World/envs/env_.*/Shelf",
         init_state=AssetBaseCfg.InitialStateCfg(
             pos=tuple(_SHELF_POS),
             rot=tuple(shelf_quat_wxyz),
         ),
-        spawn=UsdFileCfg(
+        spawn=KinematicUsdFileCfg(
             usd_path=shelf_usd,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
             collision_props=sim_utils.CollisionPropertiesCfg(
@@ -492,22 +568,47 @@ def build_scene_assets(scene_json_path: str):
         ),
     )
 
-    # Walls — kinematic (static, collision via convex hull)
+    # Walls — kinematic (static, collision)
     if walls_enabled and wall_usd and os.path.exists(wall_usd):
-        result["walls"] = AssetBaseCfg(
+        # Pre-built wall USD file
+        result["walls"].append(("walls", AssetBaseCfg(
             prim_path="/World/envs/env_.*/Walls",
             init_state=AssetBaseCfg.InitialStateCfg(
                 pos=(0.0, 0.15, 0.0),
                 rot=(1.0, 0.0, 0.0, 0.0),
             ),
-            spawn=UsdFileCfg(
+            spawn=KinematicUsdFileCfg(
                 usd_path=wall_usd,
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
                 collision_props=sim_utils.CollisionPropertiesCfg(
                     collision_enabled=True,
                 ),
             ),
-        )
+        )))
+    elif walls_enabled:
+        # Procedural ㄷ-shaped walls (matches generated_scenes4/shelf_cola/main.py)
+        wall_geom = _compute_wall_geometry(planes, cfg)
+        for wall_name, wg in wall_geom.items():
+            result["walls"].append((f"wall_{wall_name}", AssetBaseCfg(
+                prim_path=f"/World/envs/env_.*/Wall_{wall_name}",
+                init_state=AssetBaseCfg.InitialStateCfg(
+                    pos=wg["pos"],
+                    rot=(1.0, 0.0, 0.0, 0.0),
+                ),
+                spawn=sim_utils.CuboidCfg(
+                    size=wg["size"],
+                    collision_props=sim_utils.CollisionPropertiesCfg(
+                        collision_enabled=True,
+                    ),
+                    rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                        kinematic_enabled=True,
+                    ),
+                    visual_material=sim_utils.PreviewSurfaceCfg(
+                        diffuse_color=(0.85, 0.85, 0.85),
+                        opacity=0.3,
+                    ),
+                ),
+            )))
 
     # Items — dynamic rigid bodies (physics-enabled, graspable)
     #

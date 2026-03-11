@@ -47,8 +47,7 @@ fi
 if [ -z "$CUDA_VER" ]; then
     CUDA_VER=$DEFAULT_CUDA
 fi
-PYTORCH_CMD="pip install $TORCH_PKG 
-#--index-url https://download.pytorch.org/whl/$CUDA_VER"
+PYTORCH_CMD="pip install $TORCH_PKG --index-url https://download.pytorch.org/whl/$CUDA_VER"
 
 UNITREE_DIR=$(pwd)
 
@@ -143,8 +142,7 @@ eval "$PYTORCH_CMD"
 
 echo "Installing Isaac Sim $ISAAC_VERSION..."
 pip install --upgrade pip
-pip install "$ISAAC_SIM_PKG"
-# --extra-index-url https://pypi.nvidia.com
+pip install "$ISAAC_SIM_PKG" --extra-index-url https://pypi.nvidia.com
 
 echo "**************************************************"
 echo "Modifying teleimager configurations..."
