@@ -43,7 +43,7 @@ def _resolve(path: str, base_dir: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Scene JSON defaults (mirrors generated_scenes/view_scene.py)
+# Scene JSON defaults (mirrors generated_scenes4/shelf_cola/item_placement.py)
 # ---------------------------------------------------------------------------
 
 _DEFAULTS = {
@@ -51,7 +51,7 @@ _DEFAULTS = {
     "shelf_name": "SHELF",
     "planes_dir": "Prop/shelf/planes_fixed_real",
     "walls_enabled": True,
-    "wall_usd": "",
+    "wall_usd": "Prop/walls/walls.usda",
     "wall_height": 1.8,
     "wall_thickness": 0.05,
     "wall_margin": 0.05,
@@ -224,18 +224,20 @@ def _compute_placements(planes, zone_config, item_usds):
             n_rows = max(1, int((total_u_m + gap_fb) / (depth + gap_fb)))
             n_cols = math.ceil(count / n_rows)
             zone_width = n_cols * (foot + gap_lr) - gap_lr
-            # Bottom-origin assumption: USD item origin is at the base of the
-            # geometry, so bottom_offset = 0 for upright items.  The AABB center
-            # Z (aabb_cz) is H/2 above the origin.
-            bottom_offset = 0.0
-            aabb_cz = H / 2.0
+
+            # Use measured AABB values if available, otherwise defaults
+            # for bottom-origin assets (origin at geometry bottom face):
+            #   bottom_offset = 0.0, aabb_cz = H/2.0
+            bottom_offset = info.get("bottom_offset", 0.0)
+            aabb_cz = info.get("aabb_cz", H / 2.0)
 
             zone_infos.append({
                 "label": label, "count": count, "foot": foot, "depth": depth,
                 "gap_lr": gap_lr, "gap_fb": gap_fb,
                 "n_cols": n_cols, "n_rows": n_rows,
                 "zone_width": zone_width, "obj_H": H,
-                "bottom_offset": bottom_offset, "aabb_cz": aabb_cz,
+                "bottom_offset": bottom_offset,
+                "aabb_cz": aabb_cz,
                 "_zone_cfg": z,
             })
 
@@ -281,7 +283,7 @@ def _compute_placements(planes, zone_config, item_usds):
             count = zi["count"]
             obj_H = zi["obj_H"]
             bottom_offset = zi["bottom_offset"]
-            aabb_cz = zi["aabb_cz"]
+            _aabb_cz = zi["aabb_cz"]
             zone_width = zi["zone_width"]
 
             block_u = n_rows * depth + (n_rows - 1) * gap_fb
@@ -302,7 +304,7 @@ def _compute_placements(planes, zone_config, item_usds):
             per_item_rots = z_cfg.get("item_rotations", {})
             per_item_offsets = z_cfg.get("item_offsets", {})
 
-            def _compute_ori_offset(crx, cry, crz, _foot=foot, _depth=depth, _obj_H=obj_H, _bottom_offset=bottom_offset, _aabb_cz=aabb_cz):
+            def _compute_ori_offset(crx, cry, crz, _foot=foot, _depth=depth, _obj_H=obj_H, _bottom_offset=bottom_offset, _aabb_cz=_aabb_cz):
                 if crx != 0.0 or cry != 0.0 or crz != 0.0:
                     q = _euler_deg_to_quat_xyzw(crx, cry, crz)
                     rx_r = math.radians(crx)
@@ -315,8 +317,6 @@ def _compute_placements(planes, zone_config, item_usds):
                     hx = _foot / 2
                     hy = _depth / 2
                     hz = _obj_H / 2
-                    # Rotated AABB min Z accounts for AABB center offset (aabb_cz)
-                    # boff = half_extent_z_rotated - R22 * aabb_cz
                     boff = abs(R20) * hx + abs(R21) * hy + abs(R22) * hz - R22 * _aabb_cz
                     return q, boff
                 return [0.0, 0.0, 0.0, 1.0], _bottom_offset
@@ -512,6 +512,34 @@ def _compute_wall_geometry(planes, cfg):
     }
 
 
+def _measure_usd_aabb(usd_path: str) -> dict:
+    """Measure AABB from a USD file using pxr, matching item_placement.py logic.
+
+    Returns dict with bottom_offset and aabb_cz, or empty dict on failure.
+    """
+    try:
+        from pxr import Usd, UsdGeom
+        stage = Usd.Stage.Open(usd_path)
+        if stage is None:
+            return {}
+        root = stage.GetDefaultPrim()
+        if not root:
+            root = stage.GetPrimAtPath("/")
+        cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+        bbox = cache.ComputeUntransformedBound(root)
+        lr = bbox.ComputeAlignedRange()
+        lmn = lr.GetMin()
+        lmx = lr.GetMax()
+        H = float(lmx[2] - lmn[2])
+        if H <= 0:
+            return {}
+        bottom_offset = float(-lmn[2])
+        aabb_cz = float(lmn[2] + lmx[2]) / 2.0
+        return {"bottom_offset": bottom_offset, "aabb_cz": aabb_cz}
+    except Exception:
+        return {}
+
+
 def build_scene_assets(scene_json_path: str):
     """
     Parse a scene JSON and return lists of asset definitions suitable for
@@ -537,6 +565,17 @@ def build_scene_assets(scene_json_path: str):
     planes_dir = cfg["planes_dir"]
     walls_enabled = cfg.get("walls_enabled", True)
     wall_usd = cfg.get("wall_usd", "")
+
+    # Measure AABB from USD files and augment item_usds with bottom_offset/aabb_cz
+    for label, info in item_usds.items():
+        if not isinstance(info, dict):
+            continue
+        usd_path = info.get("usd", "")
+        if usd_path and os.path.exists(usd_path):
+            aabb = _measure_usd_aabb(usd_path)
+            if aabb:
+                info.setdefault("bottom_offset", aabb["bottom_offset"])
+                info.setdefault("aabb_cz", aabb["aabb_cz"])
 
     # Load planes and compute placements
     planes = _load_planes(planes_dir)

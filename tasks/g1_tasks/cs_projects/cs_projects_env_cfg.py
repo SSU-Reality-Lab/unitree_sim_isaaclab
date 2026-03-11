@@ -54,7 +54,7 @@ class CSProjectsSceneCfg(InteractiveSceneCfg):
 
     # Robot — positioned to align with the convenience store shelf scene
     robot: ArticulationCfg = G1RobotPresets.g1_29dof_dex3_base_fix_waist(
-        init_pos=(0.15, -0.45, 0.79),
+        init_pos=(0.15, -0.45, 0.76),
     )
 
     # Cameras
@@ -177,18 +177,18 @@ class CSProjectsEnvCfg(ManagerBasedRLEnvCfg):
 # Lazy factory used by __init__.py's gym registration
 # ---------------------------------------------------------------------------
 
-def get_env_cfg_class(scene_index: int):
-    """Return the CSProjectsEnvCfg *class* pre-configured for the given scene index.
+def get_env_cfg_class(task_num: int, scene_index: int):
+    """Return the CSProjectsEnvCfg *class* pre-configured for the given task and scene index.
 
     This is called lazily by the callable registered in gym.register kwargs,
     so scene JSON parsing only happens when the specific task is requested.
     """
     from . import SCENE_REGISTRY
 
-    scene_path = SCENE_REGISTRY.get(scene_index)
+    scene_path = SCENE_REGISTRY.get((task_num, scene_index))
     if scene_path is None:
         raise ValueError(
-            f"CS-Projects scene index {scene_index} not found in SCENE_REGISTRY. "
+            f"CS-PROJECT-{task_num}-{scene_index} not found in SCENE_REGISTRY. "
             f"Available: {sorted(SCENE_REGISTRY.keys())}"
         )
 

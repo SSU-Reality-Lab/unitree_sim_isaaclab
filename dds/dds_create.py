@@ -3,6 +3,9 @@
 from dds.dds_master import dds_manager
 
 def create_dds_objects(args_cli,env):
+    network_interface = getattr(args_cli, 'network_interface', None)
+    dds_manager.init_dds(domain_id=1, network_interface=network_interface)
+
     publish_names = []
     subscribe_names = []
     if args_cli.robot_type=="g129" or args_cli.robot_type=="h1_2":
@@ -53,6 +56,9 @@ def create_dds_objects(args_cli,env):
     return reset_pose_dds,sim_state_dds,dds_manager
 
 def create_dds_objects_replay(args_cli,env):
+    network_interface = getattr(args_cli, 'network_interface', None)
+    dds_manager.init_dds(domain_id=1, network_interface=network_interface)
+
     publish_names = []
     subscribe_names = []
     if args_cli.robot_type=="g129" or args_cli.robot_type=="h1_2":

@@ -40,7 +40,6 @@ class DDSManager:
         self._default_pub_interval: float = 0.01  # 100Hz default
 
         self.dds_initialized = False
-        self._init_dds()
         print("[DDSManager] DDSManager initialized")
     
     def _parse_object_name(self, name: str) -> tuple[str, str]:
@@ -51,15 +50,25 @@ class DDSManager:
         else:
             return "", name
     
-    def _init_dds(self) -> bool:
-        """Init DDS system"""
+    def init_dds(self, domain_id: int = 1, network_interface: str = None) -> bool:
+        """Init DDS system
+
+        Args:
+            domain_id: DDS domain ID (default: 1 for simulation)
+            network_interface: network interface name (e.g., "eth0", "lo").
+                             If None, initialize without specifying interface.
+        """
         if self.dds_initialized:
             return True
-        
+
         try:
-            ChannelFactoryInitialize(1, "wg0")
+            if network_interface:
+                ChannelFactoryInitialize(domain_id, network_interface)
+                print(f"[DDSManager] DDS system initialized (domain={domain_id}, interface={network_interface})")
+            else:
+                ChannelFactoryInitialize(domain_id)
+                print(f"[DDSManager] DDS system initialized (domain={domain_id}, default interface)")
             self.dds_initialized = True
-            print("[DDSManager] DDS system initialized")
             return True
         except Exception as e:
             print(f"[DDSManager] DDS system initialization failed: {e}")
@@ -180,9 +189,11 @@ class DDSManager:
         self._pub_list.clear()
         for name, obj in self.objects.items():
             if enable_publish_names is None or name in enable_publish_names:
-                obj.setup_publisher()
-                obj.publishing = True
-                self._pub_list.append(name)
+                if obj.setup_publisher():
+                    obj.publishing = True
+                    self._pub_list.append(name)
+                else:
+                    print(f"[DDSManager] skipping publisher for '{name}' (setup failed)")
         self.publishing_running = True
         
         self.publish_thread = threading.Thread(target=self._publish_loop)
@@ -201,10 +212,12 @@ class DDSManager:
         self.subscribing_running = False
     def start_subscribing(self,enable_subscribe_names:List[str]=None):
         """Start subscribing"""
-        for name, obj in self.objects.items():  
+        for name, obj in self.objects.items():
             if enable_subscribe_names is None or name in enable_subscribe_names:
-                obj.setup_subscriber()
-                obj.subscribing = True
+                if obj.setup_subscriber():
+                    obj.subscribing = True
+                else:
+                    print(f"[DDSManager] skipping subscriber for '{name}' (setup failed)")
 
 
     def stop_all_communication(self):
