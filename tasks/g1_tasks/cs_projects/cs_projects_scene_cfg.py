@@ -392,15 +392,25 @@ def _compute_placements(planes, zone_config, item_usds):
 # Scene discovery
 # ---------------------------------------------------------------------------
 
-def find_scene_jsons(root_dir: str = None):
-    """Find all scene_*.json files under root_dir (excluding _meta/_patched)."""
+def find_scene_jsons(root_dir: str = None, split: str = "train"):
+    """Find scene_*.json files under root_dir (excluding _meta/_patched).
+
+    Args:
+        root_dir: Base directory to search. Defaults to CS_PROJECTS env var.
+        split: Only include scenes whose path contains this subdirectory
+            (e.g. ``"train"`` or ``"test"``).  Set to ``None`` to include all.
+    """
     if root_dir is None:
         root_dir = _get_cs_projects_dir()
     pattern = os.path.join(root_dir, "**", "scene_*.json")
     all_files = glob.glob(pattern, recursive=True)
-    return [f for f in sorted(all_files)
-            if "_meta" not in os.path.basename(f)
-            and "_patched" not in os.path.basename(f)]
+    filtered = [f for f in sorted(all_files)
+                if "_meta" not in os.path.basename(f)
+                and "_patched" not in os.path.basename(f)]
+    if split:
+        filtered = [f for f in filtered if os.sep + split + os.sep in f
+                    or "/" + split + "/" in f]
+    return filtered
 
 
 def _sanitize_prim_name(name: str) -> str:
