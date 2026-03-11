@@ -53,7 +53,7 @@ class CSProjectsSceneCfg(InteractiveSceneCfg):
     )
 
     # Robot — positioned to align with the convenience store shelf scene
-    robot: ArticulationCfg = G1RobotPresets.g1_29dof_dex3_base_fix(
+    robot: ArticulationCfg = G1RobotPresets.g1_29dof_dex3_base_fix_waist(
         init_pos=(-0.15, -0.403, 0.76),
     )
 

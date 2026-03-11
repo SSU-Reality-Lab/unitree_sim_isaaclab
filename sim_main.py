@@ -181,7 +181,19 @@ def main():
     except Exception as e:
         print(f"Failed to parse environment configuration: {e}")
         return
-    
+
+    # waist follow: unlock waist velocity limit so the joint can actually move
+    if args_cli.waist_follow:
+        try:
+            waist_act = env_cfg.scene.robot.actuators.get("waist")
+            if waist_act is not None:
+                waist_act.velocity_limit_sim = 100.0
+                print(f"[waist-follow] waist velocity_limit_sim overridden to {waist_act.velocity_limit_sim}")
+            else:
+                print("[waist-follow] warning: 'waist' actuator not found in robot config")
+        except Exception as e:
+            print(f"[waist-follow] failed to override waist velocity_limit: {e}")
+
     # create environment
     print("\ncreate environment...")
     try:

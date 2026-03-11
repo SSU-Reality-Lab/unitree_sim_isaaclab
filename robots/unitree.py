@@ -111,7 +111,7 @@ G129_CFG_WITH_DEX3_BASE_FIX = ArticulationCfg(
                 "waist_pitch_joint"
             ],  
             effort_limit=1000.0,  # set a large torque limit
-            velocity_limit=0.0,   # set the velocity limit to 0
+            velocity_limit_sim=0.0,   # set the velocity limit to 0 (overridden by --waist-follow)
             stiffness={
                 "waist_yaw_joint": 10000.0,
                 "waist_roll_joint": 10000.0,
@@ -173,6 +173,41 @@ G129_CFG_WITH_DEX3_BASE_FIX = ArticulationCfg(
 )
 
 
+# Same as G129_CFG_WITH_DEX3_BASE_FIX but with active waist yaw joint.
+# Roll and pitch remain locked.
+G129_CFG_WITH_DEX3_BASE_FIX_WAIST = G129_CFG_WITH_DEX3_BASE_FIX.replace(
+    actuators={
+        **G129_CFG_WITH_DEX3_BASE_FIX.actuators,
+        "waist": ImplicitActuatorCfg(
+            joint_names_expr=[
+                "waist_yaw_joint",
+                "waist_roll_joint",
+                "waist_pitch_joint",
+            ],
+            effort_limit_sim={
+                "waist_yaw_joint": 88.0,
+                "waist_roll_joint": 1000.0,
+                "waist_pitch_joint": 1000.0,
+            },
+            velocity_limit_sim={
+                "waist_yaw_joint": 32.0,
+                "waist_roll_joint": 0.0,
+                "waist_pitch_joint": 0.0,
+            },
+            stiffness={
+                "waist_yaw_joint": 200.0,
+                "waist_roll_joint": 10000.0,
+                "waist_pitch_joint": 10000.0,
+            },
+            damping={
+                "waist_yaw_joint": 5.0,
+                "waist_roll_joint": 10000.0,
+                "waist_pitch_joint": 10000.0,
+            },
+            armature=0.01,
+        ),
+    },
+)
 
 
 G129_CFG_WITH_DEX1_BASE_FIX = ArticulationCfg(
@@ -266,7 +301,7 @@ G129_CFG_WITH_DEX1_BASE_FIX = ArticulationCfg(
                 "waist_pitch_joint"
             ],  
             effort_limit=1000.0,  # set a large torque limit
-            velocity_limit=0.0,   # set the velocity limit to 0
+            velocity_limit_sim=0.0,   # set the velocity limit to 0 (overridden by --waist-follow)
             stiffness={
                 "waist_yaw_joint": 10000.0,
                 "waist_roll_joint": 10000.0,
@@ -437,7 +472,7 @@ G129_CFG_WITH_INSPIRE_HAND = ArticulationCfg(
                 "waist_pitch_joint"
             ],  
             effort_limit=1000.0,  # set a large torque limit
-            velocity_limit=0.0,   # set the velocity limit to 0
+            velocity_limit_sim=0.0,   # set the velocity limit to 0 (overridden by --waist-follow)
             stiffness={
                 "waist_yaw_joint": 10000.0,
                 "waist_roll_joint": 10000.0,

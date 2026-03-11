@@ -8,7 +8,7 @@ support different robot variants: with/without waist joint, different finger con
 
 from isaaclab.assets import ArticulationCfg
 from isaaclab.utils import configclass
-from robots.unitree import G129_CFG_WITH_DEX1_BASE_FIX,G129_CFG_WITH_DEX3_BASE_FIX,G129_CFG_WITH_INSPIRE_HAND,G129_CFG_WITH_DEX1_WHOLEBODY,G129_CFG_WITH_DEX3_WHOLEBODY,G129_CFG_WITH_INSPIRE_WHOLEBODY,H12_CFG_WITH_INSPIRE_HAND
+from robots.unitree import G129_CFG_WITH_DEX1_BASE_FIX,G129_CFG_WITH_DEX3_BASE_FIX,G129_CFG_WITH_DEX3_BASE_FIX_WAIST,G129_CFG_WITH_INSPIRE_HAND,G129_CFG_WITH_DEX1_WHOLEBODY,G129_CFG_WITH_DEX3_WHOLEBODY,G129_CFG_WITH_INSPIRE_WHOLEBODY,H12_CFG_WITH_INSPIRE_HAND
 from typing import Optional, Dict, Tuple, Literal
 
 
@@ -271,6 +271,18 @@ class G1RobotPresets:
             base_config=G129_CFG_WITH_DEX3_BASE_FIX
         )
 
+
+    @classmethod
+    def g1_29dof_dex3_base_fix_waist(cls, init_pos: Tuple[float, float, float] = (-0.15, 0.0, 0.76),
+        init_rot: Tuple[float, float, float, float] = (0.7071, 0, 0, 0.7071)) -> ArticulationCfg:
+        """base-fix with active waist joints (for cs-projects waist-follow)"""
+        return RobotBaseCfg.get_base_config(
+            init_pos=init_pos,
+            init_rot=init_rot,
+            include_waist=True,
+            hand_type="dex3",
+            base_config=G129_CFG_WITH_DEX3_BASE_FIX_WAIST
+        )
 
     @classmethod
     def g1_29dof_inspire_base_fix(cls,init_pos: Tuple[float, float, float] = (-0.15, 0.0, 0.76),
