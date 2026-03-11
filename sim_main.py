@@ -8,6 +8,9 @@ import os
 project_root = os.path.dirname(os.path.abspath(__file__))
 os.environ["PROJECT_ROOT"] = project_root
 
+# DDS Setup
+#os.environ["CYCLONEDDS_URI"] = r"file:///home/eunwoo/Projects/custom/cyclonedds.xml"
+
 import argparse
 import contextlib
 import time
@@ -53,6 +56,7 @@ parser.add_argument("--profile_interval", type=int, default=500, help="performan
 parser.add_argument("--model_path", type=str, default="assets/model/policy.onnx", help="model path")
 parser.add_argument("--reward_interval", type=int, default=10, help="step interval for reward calculation")
 parser.add_argument("--enable_wholebody_dds", action="store_true", default=False, help="enable wh dds")
+parser.add_argument("--waist-follow", action="store_true", default=False, help="enable waist yaw following from DDS lowcmd")
 
 parser.add_argument("--physics_dt", type=float, default=None, help="physics time step, e.g., 0.005")
 parser.add_argument("--render_interval", type=int, default=None, help="render interval steps (>=1)")
@@ -76,6 +80,9 @@ parser.add_argument("--camera_exclude", type=str, default="world_camera", help="
 
 parser.add_argument("--env_reward_interval", type=int, default=5, help="environment reward compute interval (steps)")
 parser.add_argument("--seed", type=int, default=42, help="environment seed")
+parser.add_argument("--network-interface", type=str, default=None, help="network interface for CycloneDDS (e.g., eth0, lo). If not set, DDS uses default discovery.")
+parser.add_argument("--scene-api-port", type=int, default=8200, help="Port for Scene Control API server (0 to disable)")
+parser.add_argument("--scene-api-host", type=str, default="0.0.0.0", help="Host for Scene Control API server")
 # add AppLauncher parameters
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -177,7 +184,19 @@ def main():
     except Exception as e:
         print(f"Failed to parse environment configuration: {e}")
         return
-    
+
+    # waist follow: unlock waist velocity limit so the joint can actually move
+    if args_cli.waist_follow:
+        try:
+            waist_act = env_cfg.scene.robot.actuators.get("waist")
+            if waist_act is not None:
+                waist_act.velocity_limit_sim = 100.0
+                print(f"[waist-follow] waist velocity_limit_sim overridden to {waist_act.velocity_limit_sim}")
+            else:
+                print("[waist-follow] warning: 'waist' actuator not found in robot config")
+        except Exception as e:
+            print(f"[waist-follow] failed to override waist velocity_limit: {e}")
+
     # create environment
     print("\ncreate environment...")
     try:
@@ -386,6 +405,42 @@ def main():
             print(f"Failed to create dds: {e}")
             return
         print("========= create dds success =========")
+
+        # --- Scene API server (for CS-Projects remote scene control) ---
+        scene_server = None
+        scene_manager = None
+        if (args_cli.task.startswith("CS-PROJECT-")
+                and args_cli.scene_api_port > 0):
+            try:
+                from scene_api import SceneServer, SceneManager
+                from tasks.g1_tasks.cs_projects.cs_projects_scene_cfg import find_scene_jsons
+                from tasks.g1_tasks.cs_projects import SCENE_REGISTRY
+
+                # Parse task name: "CS-PROJECT-{task_num}-{scene_idx}"
+                parts = args_cli.task.split("-")  # ["CS", "PROJECT", "1", "3"]
+                task_num = int(parts[2])
+                start_scene = int(parts[3])
+
+                # Build scene list for this task only (sorted by scene index)
+                task_scene_keys = sorted(
+                    [k for k in SCENE_REGISTRY if k[0] == task_num],
+                    key=lambda k: k[1],
+                )
+                scene_json_list = [SCENE_REGISTRY[k] for k in task_scene_keys]
+
+                # Find the start_index within this task's scene list
+                start_index = start_scene if start_scene < len(scene_json_list) else 0
+
+                scene_server = SceneServer(host=args_cli.scene_api_host, port=args_cli.scene_api_port)
+                scene_server.start()
+                scene_manager = SceneManager(env, env_cfg, scene_server, scene_json_list, start_index, task_num=task_num)
+                print(f"[Scene API] Server on http://{args_cli.scene_api_host}:{args_cli.scene_api_port}")
+                print(f"[Scene API] Task {task_num}: {len(scene_json_list)} scenes, start={start_index}")
+            except Exception as e:
+                print(f"[Scene API] Failed to start: {e}")
+                scene_server = None
+                scene_manager = None
+
     else:
         print("========= create dds =========")
         try:
@@ -462,6 +517,10 @@ def main():
                 current_time = time.time()
                 loop_count += 1
                 if not args_cli.replay_data:
+                    # Poll Scene API commands (reset / next scene)
+                    if scene_manager is not None:
+                        scene_manager.poll()
+
                     try:
                         env_state = env.scene.get_state()
                         env_state_json =  sim_state_to_json(env_state)
@@ -581,6 +640,11 @@ def main():
     finally:
         # clean up resources
         print("\nclean up resources...")
+        if scene_server is not None:
+            try:
+                scene_server.stop()
+            except Exception as e:
+                print(f"Failed to stop scene server: {e}")
         controller.cleanup()
         image_server.stop()
         env.close()
