@@ -179,7 +179,7 @@ def _compute_placements(planes, zone_config, item_usds):
             item_rotations[label] = info["rotation"]
 
     for plane_key, pcfg in sorted(zone_config.items(), key=lambda x: int(x[0])):
-        plane_index = int(plane_key)
+        plane_index = int(plane_key) + 1
         if plane_index >= len(planes):
             continue
         plane = planes[plane_index]
