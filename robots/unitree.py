@@ -195,16 +195,17 @@ G129_CFG_WITH_DEX3_BASE_FIX_WAIST = G129_CFG_WITH_DEX3_BASE_FIX.replace(
                 "waist_pitch_joint": 0.0,
             },
             stiffness={
-                "waist_yaw_joint": 200.0,
+                "waist_yaw_joint": 300.0,
                 "waist_roll_joint": 10000.0,
                 "waist_pitch_joint": 10000.0,
             },
             damping={
-                "waist_yaw_joint": 5.0,
+                "waist_yaw_joint": 8.0,
                 "waist_roll_joint": 10000.0,
                 "waist_pitch_joint": 10000.0,
             },
-            armature=0.01,
+            friction=30.0,
+            armature=0.15,
         ),
     },
 )
