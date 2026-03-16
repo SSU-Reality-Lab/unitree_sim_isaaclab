@@ -144,6 +144,10 @@ class SceneManager:
         """
         import isaaclab.envs.mdp as base_mdp
 
+        # Re-enable physics on ALL pool items BEFORE reset_scene_to_default,
+        # otherwise PhysX errors out on setVelocity for disabled bodies.
+        self._enable_all_physics()
+
         # Reset robot + all rigid bodies to init-time defaults
         base_mdp.reset_scene_to_default(
             self.env,
@@ -159,15 +163,20 @@ class SceneManager:
     def _load_scene(self, scene_index: int):
         """Switch to a new scene by repositioning pool items.
 
-        1. Park ALL pool items underground + disable physics
-        2. Place new scene's items at their correct positions + enable physics
-        3. Update server state
+        1. Re-enable physics on all pool items (avoid PhysX errors)
+        2. Reset robot to default
+        3. Park ALL pool items underground + disable physics
+        4. Place new scene's items at their correct positions + enable physics
+        5. Update server state
         """
         if not self.scene_placements:
             logger.error("[SceneManager] Cannot switch scene — no pre-spawn data")
             return
 
         import isaaclab.envs.mdp as base_mdp
+
+        # Re-enable physics on ALL pool items BEFORE reset_scene_to_default
+        self._enable_all_physics()
 
         # Reset robot to default pose
         base_mdp.reset_scene_to_default(
@@ -245,6 +254,17 @@ class SceneManager:
     # ------------------------------------------------------------------
     # Physics toggle helpers
     # ------------------------------------------------------------------
+
+    def _enable_all_physics(self):
+        """Re-enable PhysX simulation on ALL pool items.
+
+        Must be called before ``reset_scene_to_default()`` which internally
+        writes velocities to every rigid body.  Without this, disabled bodies
+        trigger ``PxRigidDynamic::setLinearVelocity: Not allowed if
+        eDISABLE_SIMULATION is set`` errors that crash the simulation.
+        """
+        for name in self.pool_names:
+            self._set_physics_enabled(name, enabled=True)
 
     def _set_physics_enabled(self, item_name: str, *, enabled: bool):
         """Enable or disable PhysX simulation for a pool item.

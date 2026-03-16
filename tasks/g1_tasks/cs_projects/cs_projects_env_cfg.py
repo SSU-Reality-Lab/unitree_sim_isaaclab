@@ -188,13 +188,33 @@ class CSProjectsEnvCfg(ManagerBasedRLEnvCfg):
         self.sim.physx.friction_correlation_distance = 0.00625
 
         # Event manager
-        self.event_manager = SimpleEventManager()
-        self.event_manager.register("reset_all_self", SimpleEvent(
-            func=lambda env: base_mdp.reset_scene_to_default(
+        # The reset function must re-enable physics on all disabled pool items
+        # BEFORE calling reset_scene_to_default, which writes velocities to
+        # every rigid body.  Without this, PhysX errors crash the simulation.
+        _env_cfg = self  # capture for closure (pool_names set later in __post_init__)
+
+        def _reset_fn(env):
+            pool_names = getattr(_env_cfg, 'pool_names', None) or []
+            for name in pool_names:
+                try:
+                    obj = env.scene[name]
+                    view = obj.root_physx_view
+                    data = torch.tensor(
+                        [[0]] * view.count, dtype=torch.uint8, device="cpu"
+                    )
+                    indices = torch.arange(view.count, dtype=torch.int32, device="cpu")
+                    view.set_disable_simulations(data, indices)
+                    view.wake_up(indices)
+                except Exception:
+                    pass
+            base_mdp.reset_scene_to_default(
                 env,
                 torch.arange(env.num_envs, device=env.device),
             )
-        ))
+
+        self.event_manager = SimpleEventManager()
+        self.event_manager.register("reset_all_self", SimpleEvent(func=_reset_fn))
+        self.event_manager.register("reset_object_self", SimpleEvent(func=_reset_fn))
 
         # Inject dynamic scene assets from the JSON
         # scene_placements is stored here (on env cfg) — NOT on the scene cfg,
