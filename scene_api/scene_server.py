@@ -69,6 +69,8 @@ class SceneCommandQueue:
         self.total_scenes: int = 0
         self.scene_json_path: str = ""
         self.all_completed: bool = False
+        self.task_id: str = ""          # e.g. "CS-PROJECT-1-3"
+        self.instructions: dict = {}    # e.g. {"en": ["Stand the fallen ...", ...]}
 
     def submit(self, cmd_type: CommandType, timeout: float = 30.0) -> SceneCommand:
         """Submit a command and wait for the main loop to complete it."""
@@ -115,6 +117,8 @@ class SceneStatusResponse(BaseModel):
     scene_json_path: str
     all_completed: bool
     state: str  # "ready", "busy", "finished"
+    task_id: str = ""
+    instructions: dict = {}
 
 
 class SceneActionResponse(BaseModel):
@@ -123,6 +127,8 @@ class SceneActionResponse(BaseModel):
     task_num: int
     current_scene_index: int
     all_completed: bool
+    task_id: str = ""
+    instructions: dict = {}
 
 
 def create_app(cmd_queue: SceneCommandQueue) -> FastAPI:
@@ -135,6 +141,8 @@ def create_app(cmd_queue: SceneCommandQueue) -> FastAPI:
             task_num=cmd_queue.task_num,
             current_scene_index=cmd_queue.current_scene_index,
             all_completed=cmd_queue.all_completed,
+            task_id=cmd_queue.task_id,
+            instructions=cmd_queue.instructions,
         )
 
     @app.get("/scene/status", response_model=SceneStatusResponse)
@@ -148,6 +156,8 @@ def create_app(cmd_queue: SceneCommandQueue) -> FastAPI:
             scene_json_path=cmd_queue.scene_json_path,
             all_completed=cmd_queue.all_completed,
             state="finished" if cmd_queue.all_completed else ("busy" if busy else "ready"),
+            task_id=cmd_queue.task_id,
+            instructions=cmd_queue.instructions,
         )
 
     @app.post("/scene/reset", response_model=SceneActionResponse)

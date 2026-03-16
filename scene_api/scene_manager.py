@@ -10,6 +10,7 @@ Called by sim_main.py's main loop:
     scene_mgr.poll()   # once per tick
 """
 
+import json
 import logging
 import torch
 from typing import Optional
@@ -81,6 +82,8 @@ class SceneManager:
         q.current_scene_index = start_index
         q.scene_json_path = scene_json_list[start_index] if scene_json_list else ""
         q.all_completed = len(scene_json_list) == 0
+        q.task_id = f"CS-PROJECT-{task_num}-{start_index}"
+        q.instructions = self._load_instructions(start_index)
 
         # Disable physics for all inactive pool items at startup
         if self.pool_names and self.scene_placements:
@@ -195,6 +198,8 @@ class SceneManager:
         q = self.server.cmd_queue
         q.current_scene_index = scene_index
         q.scene_json_path = self.scene_json_list[scene_index]
+        q.task_id = f"CS-PROJECT-{self.task_num}-{scene_index}"
+        q.instructions = self._load_instructions(scene_index)
 
         logger.info(
             f"[SceneManager] Scene {scene_index}: "
@@ -293,3 +298,19 @@ class SceneManager:
                 f"[SceneManager] Failed to {'enable' if enabled else 'disable'} "
                 f"physics for '{item_name}': {e}"
             )
+
+    # ------------------------------------------------------------------
+    # Scene JSON helpers
+    # ------------------------------------------------------------------
+
+    def _load_instructions(self, scene_index: int) -> dict:
+        """Load vla_metadata.instructions from the scene JSON file."""
+        if scene_index >= len(self.scene_json_list):
+            return {}
+        try:
+            with open(self.scene_json_list[scene_index], "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            return cfg.get("vla_metadata", {}).get("instructions", {})
+        except Exception as e:
+            logger.warning(f"[SceneManager] Failed to load instructions for scene {scene_index}: {e}")
+            return {}
