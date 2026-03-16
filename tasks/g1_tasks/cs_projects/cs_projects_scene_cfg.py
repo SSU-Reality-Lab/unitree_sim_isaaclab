@@ -521,74 +521,64 @@ def _compute_wall_geometry(planes, cfg):
     }
 
 
-def build_all_scenes_items(scene_json_paths: list, active_scene_index: int = 0):
-    """Build RigidObjectCfg for ALL items across ALL scenes (pre-spawn approach).
+def build_all_scenes_items(scene_json_paths: list, active_scene_index: int = 0,
+                           pool_size: int = 10):
+    """Build a *pooled* set of RigidObjectCfg shared across all scenes.
 
-    Active scene items are placed at their JSON positions.
-    Inactive scene items are parked underground at z=-10.
+    Instead of spawning one object per scene-item (which explodes with 800+
+    scenes), we spawn ``pool_size`` instances per *item type* from
+    ``item_usds``.  Scene transitions simply reposition pool instances.
 
-    Item names are scene-prefixed: ``s{scene_idx}_{label}_{item_idx}``
-    to guarantee uniqueness across scenes.
+    Pool item names: ``pool_{label}_{i}``  (e.g. ``pool_Cuboid_40x40x80_3``).
+
+    If a scene needs more instances of a type than ``pool_size``, the excess
+    items are skipped and a warning is logged.
 
     Args:
         scene_json_paths: list of scene JSON paths (one per scene in the task).
         active_scene_index: index of the initially active scene.
+        pool_size: number of instances to spawn per item type.
 
     Returns:
-        items: list of ``(attr_name, RigidObjectCfg)``
-        scene_placements: ``{scene_idx: [(attr_name, pos_tuple, rot_tuple), ...]}``
-            — the *correct* positions for each scene's items, used by SceneManager
-            for repositioning on scene switch.
+        items: list of ``(attr_name, RigidObjectCfg)`` — the pool.
+        scene_placements: ``{scene_idx: [(pool_attr_name, pos, rot), ...]}``
+        pool_names: list of all pool attr names (for SceneManager bulk ops).
     """
     import isaaclab.sim as sim_utils
     from isaaclab.assets import RigidObjectCfg
     from .rigid_usd_spawner import RigidUsdFileCfg
+    import logging
+
+    logger = logging.getLogger("cs_projects_scene_cfg")
 
     PARK_POS = (0.0, 0.0, -10.0)
     PARK_ROT = (1.0, 0.0, 0.0, 0.0)
 
-    items = []
-    scene_placements = {}
+    # --- 1. Collect item_usds from the first scene (shared across all) ---
+    first_cfg = load_scene_config(scene_json_paths[0])
+    item_usds = first_cfg.get("item_usds", {})
 
-    for scene_idx, scene_json_path in enumerate(scene_json_paths):
-        cfg = load_scene_config(scene_json_path)
-        item_usds = cfg.get("item_usds", {})
-        zone_config = cfg.get("zone_config", {})
-        planes_dir = cfg["planes_dir"]
+    # --- 2. Create pool: pool_size instances per item type ---
+    items = []           # (attr_name, RigidObjectCfg)
+    pool_names = []      # all pool attr names
 
-        planes = _load_planes(planes_dir)
-        placements = _compute_placements(planes, zone_config, item_usds)
+    for label, info in item_usds.items():
+        if not isinstance(info, dict):
+            continue
+        usd_path = info.get("usd", "")
+        if not usd_path or not os.path.exists(usd_path):
+            continue
 
-        is_active = (scene_idx == active_scene_index)
-        scene_placement_list = []
+        mass = _estimate_mass(info)
 
-        for p in placements:
-            label = p["label"]
-            idx = p["index"]
-            usd_path = p["usd"]
-            pos = tuple(p["pos"])
-            qw, qx, qy, qz = p["quat_wxyz"]
-            rot = (qw, qx, qy, qz)
-
-            safe_name = _sanitize_prim_name(f"s{scene_idx}_{label}_{idx}")
-
-            if not os.path.exists(usd_path):
-                continue
-
-            item_info = item_usds.get(label, {})
-            if not isinstance(item_info, dict):
-                item_info = {}
-            mass = _estimate_mass(item_info)
-
-            # Active scene: correct position; inactive: parked underground
-            init_pos = pos if is_active else PARK_POS
-            init_rot = rot if is_active else PARK_ROT
+        for i in range(pool_size):
+            safe_name = _sanitize_prim_name(f"pool_{label}_{i}")
 
             asset = RigidObjectCfg(
                 prim_path=f"/World/envs/env_.*/{safe_name}",
                 init_state=RigidObjectCfg.InitialStateCfg(
-                    pos=init_pos,
-                    rot=init_rot,
+                    pos=PARK_POS,
+                    rot=PARK_ROT,
                 ),
                 spawn=RigidUsdFileCfg(
                     usd_path=usd_path,
@@ -603,11 +593,62 @@ def build_all_scenes_items(scene_json_paths: list, active_scene_index: int = 0):
                 ),
             )
             items.append((safe_name, asset))
-            scene_placement_list.append((safe_name, pos, rot))
+            pool_names.append(safe_name)
+
+    logger.info(
+        f"[Pool] Created {len(pool_names)} pool objects "
+        f"({len(item_usds)} types x {pool_size} each)"
+    )
+
+    # --- 3. For each scene, map placements to pool slots ---
+    scene_placements = {}
+
+    for scene_idx, scene_json_path in enumerate(scene_json_paths):
+        cfg = load_scene_config(scene_json_path)
+        zone_config = cfg.get("zone_config", {})
+        planes_dir = cfg["planes_dir"]
+        scene_item_usds = cfg.get("item_usds", item_usds)
+
+        planes = _load_planes(planes_dir)
+        placements = _compute_placements(planes, zone_config, scene_item_usds)
+
+        # Count how many of each type this scene needs
+        type_counter = {}  # label -> next pool index
+        scene_placement_list = []
+
+        for p in placements:
+            label = p["label"]
+            pos = tuple(p["pos"])
+            qw, qx, qy, qz = p["quat_wxyz"]
+            rot = (qw, qx, qy, qz)
+
+            idx = type_counter.get(label, 0)
+            if idx >= pool_size:
+                logger.warning(
+                    f"[Pool] Scene {scene_idx}: type '{label}' needs "
+                    f"{idx + 1} instances but pool_size={pool_size} — "
+                    f"item skipped"
+                )
+                type_counter[label] = idx + 1
+                continue
+
+            pool_attr = _sanitize_prim_name(f"pool_{label}_{idx}")
+            scene_placement_list.append((pool_attr, pos, rot))
+            type_counter[label] = idx + 1
 
         scene_placements[scene_idx] = scene_placement_list
 
-    return items, scene_placements
+    # --- 4. Apply active scene positions to pool items ---
+    active_placements = scene_placements.get(active_scene_index, [])
+    active_lookup = {name: (pos, rot) for name, pos, rot in active_placements}
+
+    for attr_name, asset_cfg in items:
+        if attr_name in active_lookup:
+            pos, rot = active_lookup[attr_name]
+            asset_cfg.init_state.pos = pos
+            asset_cfg.init_state.rot = rot
+
+    return items, scene_placements, pool_names
 
 
 def build_scene_assets(scene_json_path: str):

@@ -83,6 +83,7 @@ parser.add_argument("--seed", type=int, default=42, help="environment seed")
 parser.add_argument("--network-interface", type=str, default=None, help="network interface for CycloneDDS (e.g., eth0, lo). If not set, DDS uses default discovery.")
 parser.add_argument("--scene-api-port", type=int, default=8200, help="Port for Scene Control API server (0 to disable)")
 parser.add_argument("--scene-api-host", type=str, default="0.0.0.0", help="Host for Scene Control API server")
+parser.add_argument("--pool-size", type=int, default=10, help="Number of pooled instances per item type for CS-PROJECT scenes (0 to disable pooling)")
 # add AppLauncher parameters
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -176,6 +177,9 @@ def main():
     print(f"Task: {args_cli.task}")
     print(f"Action source: {args_cli.action_source}")
     print("=" * 60)
+
+    # propagate pool-size to CS-Projects env config (read via env var in __post_init__)
+    os.environ["CS_PROJECTS_POOL_SIZE"] = str(args_cli.pool_size)
 
     # parse environment configuration
     try:

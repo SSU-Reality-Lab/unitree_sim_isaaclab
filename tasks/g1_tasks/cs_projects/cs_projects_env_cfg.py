@@ -6,6 +6,7 @@ __post_init__ time from a scene JSON.  The robot (G1 dex3) and cameras use
 the exact same coordinates as pick_place_cylinder_g1_29dof_dex3.
 """
 
+import os
 import torch
 
 import isaaclab.envs.mdp as base_mdp
@@ -62,12 +63,13 @@ class CSProjectsSceneCfg(InteractiveSceneCfg):
     left_wrist_camera = CameraPresets.left_dex3_wrist_camera()
     right_wrist_camera = CameraPresets.right_dex3_wrist_camera()
 
-    def inject_scene_assets(self, scene_json_path: str, all_scene_json_paths=None):
+    def inject_scene_assets(self, scene_json_path: str, all_scene_json_paths=None,
+                            pool_size: int = 10):
         """Load scene assets and inject them as attributes.
 
         If ``all_scene_json_paths`` is provided (multi-scene / pre-spawn mode),
-        shelf and walls come from the active scene only, while items from ALL
-        scenes are pre-spawned (inactive ones parked underground at z=-10).
+        shelf and walls come from the active scene only, while items use a
+        shared pool (``pool_size`` instances per item type).
 
         The per-scene placement map is stored in ``self._scene_placements``
         so that SceneManager can reposition items on scene switch.
@@ -82,17 +84,18 @@ class CSProjectsSceneCfg(InteractiveSceneCfg):
             setattr(self, attr_name, asset_cfg)
 
         if all_scene_json_paths and len(all_scene_json_paths) > 1:
-            # Pre-spawn mode: items from ALL scenes
+            # Pooled pre-spawn mode
             active_idx = 0
             if scene_json_path in all_scene_json_paths:
                 active_idx = all_scene_json_paths.index(scene_json_path)
-            items, scene_placements = build_all_scenes_items(
+            items, scene_placements, pool_names = build_all_scenes_items(
                 all_scene_json_paths, active_scene_index=active_idx,
+                pool_size=pool_size,
             )
             for attr_name, asset_cfg in items:
                 setattr(self, attr_name, asset_cfg)
-            # Return placements — caller stores it outside the scene cfg
-            return scene_placements
+            # Return placements + pool names — caller stores outside scene cfg
+            return scene_placements, pool_names
         else:
             # Single scene (backward compatible)
             for attr_name, asset_cfg in assets["items"]:
@@ -197,11 +200,15 @@ class CSProjectsEnvCfg(ManagerBasedRLEnvCfg):
         # scene_placements is stored here (on env cfg) — NOT on the scene cfg,
         # because InteractiveSceneCfg treats all attributes as asset configs.
         self.scene_placements = None
+        self.pool_names = None
         if self.scene_json_path:
+            pool_size = int(os.environ.get("CS_PROJECTS_POOL_SIZE", "10"))
             all_paths = list(self.all_scene_json_paths) if self.all_scene_json_paths else None
-            self.scene_placements = self.scene.inject_scene_assets(
-                self.scene_json_path, all_paths
+            result = self.scene.inject_scene_assets(
+                self.scene_json_path, all_paths, pool_size=pool_size,
             )
+            if result is not None:
+                self.scene_placements, self.pool_names = result
 
 
 # ---------------------------------------------------------------------------

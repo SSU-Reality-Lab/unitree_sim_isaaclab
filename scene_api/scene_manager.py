@@ -1,11 +1,10 @@
 """
 Scene Manager — Handles scene lifecycle operations for the CS-Projects task.
 
-Uses the **pre-spawn approach**: all items from all scenes are spawned at env
-init time.  Active scene items sit at their correct positions; inactive items
-are parked underground (z=-10).  Scene transitions reposition items via
-``write_root_pose_to_sim()`` — no USD prim creation or deletion at runtime,
-which would invalidate physics tensor views.
+Uses the **pooled pre-spawn approach**: a fixed number of instances per item
+type are spawned at env init time.  Scene transitions reposition pool items
+via ``write_root_pose_to_sim()`` — no USD prim creation or deletion at
+runtime, which would invalidate physics tensor views.
 
 Called by sim_main.py's main loop:
     scene_mgr.poll()   # once per tick
@@ -51,23 +50,29 @@ class SceneManager:
 
         # Pre-spawn placement data from env cfg (NOT scene cfg, to avoid
         # Isaac Lab treating it as an asset config)
-        # {scene_idx: [(attr_name, pos_tuple, rot_tuple), ...]}
+        # {scene_idx: [(pool_attr_name, pos_tuple, rot_tuple), ...]}
         self.scene_placements: Optional[dict] = getattr(
             env_cfg, 'scene_placements', None
         )
 
-        # Build list of ALL scene item attr_names for bulk parking
-        self.all_scene_item_names: list[str] = []
-        if self.scene_placements:
+        # Pool item names — the fixed set of spawned objects
+        self.pool_names: list[str] = getattr(env_cfg, 'pool_names', None) or []
+
+        if not self.pool_names and self.scene_placements:
+            # Fallback: derive from placements (legacy non-pooled mode)
+            names_set = set()
             for scene_idx in sorted(self.scene_placements.keys()):
                 for attr_name, _pos, _rot in self.scene_placements[scene_idx]:
-                    self.all_scene_item_names.append(attr_name)
+                    names_set.add(attr_name)
+            self.pool_names = sorted(names_set)
+
+        if self.pool_names:
             logger.info(
-                f"[SceneManager] Pre-spawn mode: {len(self.all_scene_item_names)} items "
-                f"across {len(self.scene_placements)} scenes"
+                f"[SceneManager] Pool mode: {len(self.pool_names)} pool objects, "
+                f"{len(self.scene_placements)} scenes"
             )
         else:
-            logger.warning("[SceneManager] No pre-spawn data — scene transitions disabled")
+            logger.warning("[SceneManager] No pool data — scene transitions disabled")
 
         # Update server state
         q = self.server.cmd_queue
@@ -76,6 +81,15 @@ class SceneManager:
         q.current_scene_index = start_index
         q.scene_json_path = scene_json_list[start_index] if scene_json_list else ""
         q.all_completed = len(scene_json_list) == 0
+
+        # Disable physics for all inactive pool items at startup
+        if self.pool_names and self.scene_placements:
+            active_names = {
+                name for name, _, _ in self.scene_placements.get(start_index, [])
+            }
+            for name in self.pool_names:
+                if name not in active_names:
+                    self._set_physics_enabled(name, enabled=False)
 
     # ------------------------------------------------------------------
     # Main loop hook
@@ -118,7 +132,7 @@ class SceneManager:
             self.server.cmd_queue.complete(cmd, success=False, message=str(e))
 
     # ------------------------------------------------------------------
-    # Scene operations (pre-spawn approach)
+    # Scene operations (pooled pre-spawn approach)
     # ------------------------------------------------------------------
 
     def _reset_current_scene(self):
@@ -143,10 +157,10 @@ class SceneManager:
             self._apply_scene_positions(self.current_index)
 
     def _load_scene(self, scene_index: int):
-        """Switch to a new scene by repositioning pre-spawned items.
+        """Switch to a new scene by repositioning pool items.
 
-        1. Park ALL scene items underground
-        2. Place new scene's items at their correct positions
+        1. Park ALL pool items underground + disable physics
+        2. Place new scene's items at their correct positions + enable physics
         3. Update server state
         """
         if not self.scene_placements:
@@ -161,7 +175,7 @@ class SceneManager:
             torch.arange(self.env.num_envs, device=self.env.device),
         )
 
-        # Park all items underground
+        # Park all pool items underground
         self._park_all_items()
 
         # Place new scene items at correct positions
@@ -183,24 +197,25 @@ class SceneManager:
     # ------------------------------------------------------------------
 
     def _park_all_items(self):
-        """Move ALL pre-spawned scene items underground and zero their velocity."""
+        """Move ALL pool items underground, zero velocity, and disable physics."""
         device = self.env.device
         park_pose = torch.tensor([_PARK_POSE], dtype=torch.float32, device=device)
         zero_vel = torch.zeros((1, 6), dtype=torch.float32, device=device)
         env_ids = torch.tensor([0], dtype=torch.long, device=device)
 
-        for name in self.all_scene_item_names:
+        for name in self.pool_names:
             try:
                 obj = self.env.scene[name]
                 obj.write_root_pose_to_sim(park_pose, env_ids)
                 obj.write_root_velocity_to_sim(zero_vel, env_ids)
+                self._set_physics_enabled(name, enabled=False)
             except KeyError:
-                logger.warning(f"[SceneManager] Item '{name}' not found in scene")
+                logger.warning(f"[SceneManager] Pool item '{name}' not found in scene")
             except Exception as e:
                 logger.warning(f"[SceneManager] Failed to park '{name}': {e}")
 
     def _apply_scene_positions(self, scene_index: int):
-        """Reposition items for the given scene to their correct positions."""
+        """Reposition pool items for the given scene and re-enable their physics."""
         placements = self.scene_placements.get(scene_index, [])
         if not placements:
             logger.warning(f"[SceneManager] No placements for scene {scene_index}")
@@ -221,7 +236,39 @@ class SceneManager:
                 )
                 obj.write_root_pose_to_sim(pose, env_ids)
                 obj.write_root_velocity_to_sim(zero_vel, env_ids)
+                self._set_physics_enabled(attr_name, enabled=True)
             except KeyError:
-                logger.warning(f"[SceneManager] Item '{attr_name}' not found in scene")
+                logger.warning(f"[SceneManager] Pool item '{attr_name}' not found in scene")
             except Exception as e:
                 logger.warning(f"[SceneManager] Failed to reposition '{attr_name}': {e}")
+
+    # ------------------------------------------------------------------
+    # Physics toggle helpers
+    # ------------------------------------------------------------------
+
+    def _set_physics_enabled(self, item_name: str, *, enabled: bool):
+        """Enable or disable PhysX simulation for a pool item.
+
+        Uses ``RigidBodyView.set_disable_simulations()`` from the PhysX tensor
+        API.  When re-enabling, also calls ``wake_up()`` so the body responds
+        to forces immediately instead of staying asleep.
+        """
+        try:
+            obj = self.env.scene[item_name]
+            view = obj.root_physx_view
+            # flag: 0 = simulated, 1 = disabled
+            flag = 0 if enabled else 1
+            data = torch.tensor(
+                [[flag]] * view.count, dtype=torch.uint8, device="cpu"
+            )
+            indices = torch.arange(view.count, dtype=torch.int32, device="cpu")
+            view.set_disable_simulations(data, indices)
+            if enabled:
+                view.wake_up(indices)
+        except KeyError:
+            pass
+        except Exception as e:
+            logger.warning(
+                f"[SceneManager] Failed to {'enable' if enabled else 'disable'} "
+                f"physics for '{item_name}': {e}"
+            )
