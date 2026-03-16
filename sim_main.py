@@ -194,7 +194,7 @@ def main():
         try:
             waist_act = env_cfg.scene.robot.actuators.get("waist")
             if waist_act is not None:
-                waist_act.velocity_limit_sim = 100.0
+                waist_act.velocity_limit_sim = 40.0
                 print(f"[waist-follow] waist velocity_limit_sim overridden to {waist_act.velocity_limit_sim}")
             else:
                 print("[waist-follow] warning: 'waist' actuator not found in robot config")
