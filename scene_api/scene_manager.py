@@ -237,6 +237,8 @@ class SceneManager:
         for attr_name, pos, rot in placements:
             try:
                 obj = self.env.scene[attr_name]
+                # Re-enable physics FIRST — velocity writes fail on disabled bodies
+                self._set_physics_enabled(attr_name, enabled=True)
                 # pose: (N, 7) = [x, y, z, qw, qx, qy, qz]
                 pose = torch.tensor(
                     [[pos[0], pos[1], pos[2], rot[0], rot[1], rot[2], rot[3]]],
@@ -245,7 +247,6 @@ class SceneManager:
                 )
                 obj.write_root_pose_to_sim(pose, env_ids)
                 obj.write_root_velocity_to_sim(zero_vel, env_ids)
-                self._set_physics_enabled(attr_name, enabled=True)
             except KeyError:
                 logger.warning(f"[SceneManager] Pool item '{attr_name}' not found in scene")
             except Exception as e:
