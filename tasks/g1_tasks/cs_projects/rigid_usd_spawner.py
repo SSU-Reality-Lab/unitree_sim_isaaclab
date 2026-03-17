@@ -20,7 +20,9 @@ from typing import TYPE_CHECKING
 
 from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
 from isaaclab.sim.spawners.from_files import from_files as _ff
+from isaaclab.sim.spawners import materials
 from isaaclab.sim.utils import clone
+from isaaclab.sim.utils.prims import bind_physics_material
 from isaaclab.utils import configclass
 
 if TYPE_CHECKING:
@@ -56,18 +58,20 @@ def spawn_rigid_usd(
 
     # Apply CollisionAPI to every Gprim (Mesh, Cube, Sphere, Cylinder, etc.)
     # under the root so PhysX generates collision geometry.
-    # Previously only checked UsdGeom.Mesh — missed primitive shapes like Cube.
+    # If the USD already has CollisionAPI baked in, respect it — don't override.
     gprim_count = 0
     for child in _Usd.PrimRange(root):
         if child.IsA(UsdGeom.Gprim):
             gprim_count += 1
             if not child.HasAPI(UsdPhysics.CollisionAPI):
                 UsdPhysics.CollisionAPI.Apply(child)
-            # For Mesh prims, use convex hull collision.
+            # For Mesh prims without existing MeshCollisionAPI, use convexHull.
+            # convexHull is more robust than convexDecomposition for small objects
+            # (decomposition can create gaps that thin fingers slip through).
             if child.IsA(UsdGeom.Mesh):
                 if not child.HasAPI(UsdPhysics.MeshCollisionAPI):
                     mesh_col_api = UsdPhysics.MeshCollisionAPI.Apply(child)
-                    mesh_col_api.GetApproximationAttr().Set("convexDecomposition")
+                    mesh_col_api.GetApproximationAttr().Set("convexHull")
 
     if gprim_count == 0:
         print(f"[rigid_usd_spawner] WARNING: No geometry prims found in {prim_path}")
@@ -82,6 +86,16 @@ def spawn_rigid_usd(
     if cfg.mass_props is not None:
         schemas.modify_mass_properties(prim_path, cfg.mass_props)
 
+    # 4. Create and bind physics material (friction, restitution, etc.)
+    if cfg.physics_material is not None:
+        mat_path = f"{prim_path}/physicsMaterial"
+        cfg.physics_material.func(mat_path, cfg.physics_material)
+        # Bind to every collision-enabled Gprim
+        from pxr import Usd as _Usd2, UsdGeom as _UsdGeom2, UsdPhysics as _UsdPhysics2
+        for child in _Usd2.PrimRange(stage.GetPrimAtPath(prim_path)):
+            if child.IsA(_UsdGeom2.Gprim) and child.HasAPI(_UsdPhysics2.CollisionAPI):
+                bind_physics_material(str(child.GetPath()), mat_path, stage=stage)
+
     return prim
 
 
@@ -94,6 +108,9 @@ class RigidUsdFileCfg(UsdFileCfg):
     """
 
     func = spawn_rigid_usd
+
+    physics_material: materials.RigidBodyMaterialCfg | None = None
+    """Physics material (friction, restitution) to apply to collision meshes."""
 
 
 # ---------------------------------------------------------------------------

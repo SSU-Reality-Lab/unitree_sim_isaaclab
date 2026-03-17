@@ -443,17 +443,8 @@ def load_scene_config(scene_json_path: str) -> dict:
 
 
 def _estimate_mass(item_info: dict) -> float:
-    """Estimate mass from item dimensions (H, foot, depth).
-
-    Uses a simple volume-based heuristic assuming average density ~300 kg/m³
-    (typical for packaged food items).  Clamped to [0.05, 2.0] kg.
-    """
-    H = item_info.get("H", 0.1)
-    foot = item_info.get("foot", 0.1)
-    depth = item_info.get("depth", foot)
-    volume = H * foot * depth  # m³
-    mass = max(0.05, min(2.0, volume * 300.0))
-    return round(mass, 4)
+    """Return mass from scene JSON (in kg), falling back to 0.2 kg."""
+    return item_info.get("mass", 0.2)
 
 
 def _estimate_shelf_aabb(planes):
@@ -584,11 +575,19 @@ def build_all_scenes_items(scene_json_paths: list, active_scene_index: int = 0,
                     usd_path=usd_path,
                     rigid_props=sim_utils.RigidBodyPropertiesCfg(
                         disable_gravity=False,
-                        max_depenetration_velocity=1.0,
                     ),
                     mass_props=sim_utils.MassPropertiesCfg(mass=mass),
                     collision_props=sim_utils.CollisionPropertiesCfg(
                         collision_enabled=True,
+                        contact_offset=0.01,
+                        rest_offset=0.0,
+                    ),
+                    physics_material=sim_utils.RigidBodyMaterialCfg(
+                        friction_combine_mode="max",
+                        restitution_combine_mode="min",
+                        static_friction=0.4,
+                        dynamic_friction=0.3,
+                        restitution=0.1,
                     ),
                 ),
             )
@@ -786,11 +785,19 @@ def build_scene_assets(scene_json_path: str):
                 usd_path=usd_path,
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(
                     disable_gravity=False,
-                    max_depenetration_velocity=1.0,
                 ),
                 mass_props=sim_utils.MassPropertiesCfg(mass=mass),
                 collision_props=sim_utils.CollisionPropertiesCfg(
                     collision_enabled=True,
+                    contact_offset=0.01,
+                    rest_offset=0.005,
+                ),
+                physics_material=sim_utils.RigidBodyMaterialCfg(
+                    friction_combine_mode="max",
+                    restitution_combine_mode="min",
+                    static_friction=1.5,
+                    dynamic_friction=1.5,
+                    restitution=0.0,
                 ),
             ),
         )
